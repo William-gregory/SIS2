@@ -59,6 +59,9 @@ use SIS2_ice_thm,      only : SIS2_ice_thm_CS, SIS2_ice_thm_init, SIS2_ice_thm_e
 use SIS2_ice_thm,      only : ice_resize_SIS2, add_frazil_SIS2, rebalance_ice_layers
 use SIS2_ice_thm,      only : get_SIS2_thermo_coefs, enthalpy_liquid_freeze
 use SIS2_ice_thm,      only : enth_from_TS, Temp_from_En_S, enthalpy_liquid, calculate_T_freeze
+use Forpy_interface,   only : python_interface !WG
+use Forpy_interface,   only : forpy_run_python_init,forpy_run_python_finalize !WG
+use SIS_G23_CNN,       only : CNN_CS,CNN_init,CNN_inference !WG
 
 implicit none ; private
 
@@ -132,7 +135,17 @@ type slow_thermo_CS ; private
   type(SIS_sum_out_CS), pointer   :: sum_output_CSp => NULL()
                             !< A pointers to the control structures for a subsidiary module
   type(SIS_tracer_flow_control_CS), pointer :: tracer_flow_CSp => NULL()
-                            !< A pointers to the control structures for a subsidiary module
+  !< A pointers to the control structures for a subsidiary module
+
+  !!! WG !!!
+  type(python_interface) :: python !< Python interface object
+  type(CNN_CS)           :: CNN    !< Control structure for CNN
+  logical :: use_G23_CNN   !< If true, use a python script to update part_size
+
+  character(len=200) :: & 
+    python_dir, & !< default = ".". The directory in which python scripts are found.
+    python_file   !< default = "pymodule" - this is the python script that calls pyTorch
+  !!! WG end !!!
 
   !>@{ Diagnostic IDs
   integer :: id_qflim=-1, id_qfres=-1, id_fwnudge=-1, id_net_melt=-1, id_CMOR_melt=-1
@@ -457,7 +470,12 @@ subroutine slow_thermodynamics(IST, dt_slow, CS, OSS, FIA, XSF, IOF, G, US, IG)
     call write_ice_statistics(IST, CS%Time, CS%n_calls, G, US, IG, CS%sum_output_CSp, &
                               message="      Post_thermo A", check_column=.true.)
   call adjust_ice_categories(IST%mH_ice, IST%mH_snow, IST%mH_pond, IST%part_size, &
-                             IST%TrReg, G, IG, CS%SIS_transport_CSp) !Niki: add ridging?
+       IST%TrReg, G, IG, CS%SIS_transport_CSp) !Niki: add ridging?
+
+  !!! WG !!!
+  if (CS%use_G23_CNN) &       
+       call CNN_inference(IST, OSS, FIA, G, IG, CS%python, CS%CNN, dt_slow)
+  !!! WG end !!!
 
   if (CS%column_check) &
     call write_ice_statistics(IST, CS%Time, CS%n_calls, G, US, IG, CS%sum_output_CSp, &
@@ -1576,6 +1594,20 @@ subroutine SIS_slow_thermo_init(Time, G, US, IG, param_file, diag, CS, tracer_fl
                'nudging freshwater flux', 'kg/(m^2*s)', conversion=US%RZ_T_to_kg_m2s, missing_value=missing)
   endif
 
+  !!! WG !!!
+  call get_param(param_file, mdl, "USE_G23_CNN", CS%use_G23_CNN, &
+  "Invoke a python script to update part_size.", default=.false.)
+  call get_param(param_file, mdl, "PYTHON_DIR", CS%python_dir, &
+  "The directory in which Python scripts are found.", default=".")
+  CS%python_dir = slasher(CS%python_dir)
+  call get_param(param_file, mdl, "PYTHON_FILE", CS%python_file, &
+  "The name of the Python script for which calls pyTorch.", default="pymodule")
+  CS%python_file = trim(CS%python_file)
+  if (CS%use_G23_CNN) call forpy_run_python_init &
+                              (CS%python,trim(CS%python_dir),trim(CS%python_file))
+  if (CS%use_G23_CNN) call CNN_init(Time, G, US, param_file, diag, CS%CNN)
+  !!! WG END !!!
+  
   call SIS2_ice_thm_init(US, param_file, CS%ice_thm_CSp)
 
   iceClock7 = cpu_clock_id( '  Ice: slow: conservation check', grain=CLOCK_LOOP )
@@ -1612,6 +1644,7 @@ subroutine SIS_slow_thermo_end (CS)
   call SIS2_ice_thm_end(CS%ice_thm_CSp)
 
   if (associated(CS)) deallocate(CS)
+  if (CS%use_G23_CNN) call forpy_run_python_finalize(CS%python) !WG
 
 end subroutine SIS_slow_thermo_end
 
