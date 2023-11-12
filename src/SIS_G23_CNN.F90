@@ -74,7 +74,7 @@ subroutine CNN_init(Time,G,US,param_file,diag,CS)
   type(SIS_diag_ctrl), target,       intent(inout) :: diag  !< Diagnostics structure.
   type(CNN_CS),                  intent(inout) :: CS    !< Control structure for CNN
   ! Local Variables
-  integer :: wd_halos(2) ! Varies with CNN
+  !integer :: wd_halos(2) ! Varies with CNN
   real, parameter :: missing = -1e34
   character(len=40)  :: mdl = "SIS_CNN"  ! module name
 
@@ -88,11 +88,11 @@ subroutine CNN_init(Time,G,US,param_file,diag,CS)
       "Halo size at each side of subdomains, depends on CNN architecture.", & 
       units="nondim", default=4)
 
-  wd_halos(1) = CS%CNN_halo_size
-  wd_halos(2) = CS%CNN_halo_size
-  call clone_MOM_domain(G%Domain, CS%CNN_Domain, min_halo=wd_halos, symmetric=.true.)
-  CS%isdw = G%isc-wd_halos(1) ; CS%iedw = G%iec+wd_halos(1)
-  CS%jsdw = G%jsc-wd_halos(2) ; CS%jedw = G%jec+wd_halos(2)
+  !wd_halos(1) = CS%CNN_halo_size
+  !wd_halos(2) = CS%CNN_halo_size
+  !call clone_MOM_domain(G%Domain, CS%CNN_Domain, min_halo=wd_halos, symmetric=.true.)
+  !CS%isdw = G%isc-wd_halos(1) ; CS%iedw = G%iec+wd_halos(1)
+  !CS%jsdw = G%jsc-wd_halos(2) ; CS%jedw = G%jec+wd_halos(2)
 
 end subroutine CNN_init
 
@@ -114,25 +114,7 @@ subroutine CNN_inference(IST, OSS, FIA, G, IG, CS, CNN, dt_slow)
                                    ::  HI        !< mean ice thickness [m].
   real, dimension(SZI_(G),SZJ_(G)) &
                                    ::  net_sw    !< net shortwave radiation [Wm-2].
-  real, dimension(SZIW_(CNN),SZJW_(CNN)) &
-                                   :: WH_SIC     !< aggregate concentrations [dimensionless].
-  real, dimension(SZIW_(CNN),SZJW_(CNN)) &
-                                   :: WH_SST     !< sea-surface temperature [degrees C].
-  real, dimension(SZIW_(CNN),SZJW_(CNN)) &
-                                   ::  WH_UI     !< zonal ice velocities [ms-1].
-  real, dimension(SZIW_(CNN),SZJW_(CNN)) &
-                                   ::  WH_VI     !< meridional ice velocities [ms-1].
-  real, dimension(SZIW_(CNN),SZJW_(CNN)) &
-                                   ::  WH_HI     !< mean ice thickness [m].
-  real, dimension(SZIW_(CNN),SZJW_(CNN)) &
-                                   ::  WH_SW     !< net shortwave radiation [Wm-2].
-  real, dimension(SZIW_(CNN),SZJW_(CNN)) &
-                                   ::  WH_TS     !< ice-surface skin temperature [degrees C].
-  real, dimension(SZIW_(CNN),SZJW_(CNN)) &
-                                   ::  WH_SSS    !< sea-surface salinity [psu].
-  real, dimension(SZIW_(CNN),SZJW_(CNN)) &
-                                   :: WH_mask    !< land-sea mask (0=land cells, 1=ocean cells)
-  real, dimension(9,SZIW_(CNN),SZJW_(CNN)) &
+  real, dimension(9,SZI_(G),SZJ_(G)) &
                                    :: XA         !< input variables to network A (predict dSIC)
   real, dimension(6,SZI_(G),SZJ_(G)) &
                                    :: XB         !< input variables to network B (predict dSICN)
@@ -144,8 +126,7 @@ subroutine CNN_inference(IST, OSS, FIA, G, IG, CS, CNN, dt_slow)
                                    :: posterior  !< updated part_size (bounded between 0 and 1)
   real, dimension(5) :: hmid
   integer :: b, i, j, k, m
-  integer :: is, ie, js, je, ncat, nlay
-  integer :: isdw, iedw, jsdw, jedw, nb
+  integer :: is, ie, js, je, ncat, nlay, nb
   real    :: cvr, Ti, qi_new, sw_cat
   real, parameter :: rho_ice = 905.0
   real, parameter :: &    !from ice_therm_vertical.F90
@@ -153,7 +134,6 @@ subroutine CNN_inference(IST, OSS, FIA, G, IG, CS, CNN, dt_slow)
        Si_new = 5.0       !salinity of mushy ice
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; ncat = IG%CatIce ; nlay = IG%NkIce
-  isdw = CNN%isdw; iedw = CNN%iedw; jsdw = CNN%jsdw; jedw = CNN%jedw
   nb = size(FIA%flux_sw_top,4)
 
   hmid = 0.0; HI = 0.0
@@ -168,60 +148,31 @@ subroutine CNN_inference(IST, OSS, FIA, G, IG, CS, CNN, dt_slow)
      enddo; enddo
   enddo
 
-  !populate variables to pad for CNN halos
-  WH_SIC = 0.0; WH_SST = 0.0 ; WH_UI = 0.0; WH_VI = 0.0; WH_HI = 0.0;
-  WH_SW = 0.0; WH_TS = 0.0; WH_SSS = 0.0; WH_mask = 0.0; XB = 0.0;
+  !populate variables
+  XA = 0.0 ; XB = 0.0
   do j=js,je ; do i=is,ie
-     WH_SST(i,j) = OSS%SST_C(i,j)
-     WH_UI(i,j) = 0.5*( IST%u_ice_C(I-1,j) + IST%u_ice_C(I,j) ) ! Copy the computational section from UI into cell center
-     WH_VI(i,j) = 0.5*( IST%v_ice_C(i,J-1) + IST%v_ice_C(i,J) ) ! Copy the computational section from VI into cell center
-     WH_HI(i,j) = HI(i,j)
-     WH_SW(i,j) = net_sw(i,j)
-     WH_TS(i,j) = FIA%Tskin_avg(i,j)
-     WH_SSS(i,j) = OSS%s_surf(i,j)
-     WH_mask(i,j) = G%mask2dT(i,j)
-     do k=1,ncat !zeroth index is open water
-        WH_SIC(i,j) = WH_SIC(i,j) + IST%part_size(i,j,k)
+     cvr = 0.0
+     do k=1,ncat
+        cvr = cvr + IST%part_size(i,j,k)
         XB(k,i,j) = IST%part_size(i,j,k)
      enddo
+     XA(1,i,j) = cvr
+     XA(2,i,j) = OSS%SST_C(i,j)
+     XA(3,i,j) = 0.5*( IST%u_ice_C(I-1,j) + IST%u_ice_C(I,j) ) ! Copy the computational section from UI into cell center
+     XA(4,i,j) = 0.5*( IST%v_ice_C(i,J-1) + IST%v_ice_C(i,J) ) ! Copy the computational section from VI into cell center
+     XA(5,i,j) = HI(i,j)
+     XA(6,i,j) = net_sw(i,j)
+     XA(7,i,j) = FIA%Tskin_avg(i,j)
+     XA(8,i,j) = OSS%s_surf(i,j)
+     XA(9,i,j) = G%mask2dT(i,j)
      XB(6,i,j) = G%mask2dT(i,j)
-  enddo ; enddo
-
-  ! Update the wide halos
-  call pass_var(WH_SIC, CNN%CNN_Domain)
-  call pass_var(WH_SST, CNN%CNN_Domain)
-  call pass_var(WH_UI, CNN%CNN_Domain)
-  call pass_var(WH_VI, CNN%CNN_Domain)
-  call pass_var(WH_HI, CNN%CNN_Domain)
-  call pass_var(WH_SW, CNN%CNN_Domain)
-  call pass_var(WH_TS, CNN%CNN_Domain)
-  call pass_var(WH_SSS, CNN%CNN_Domain)
-  call pass_var(WH_mask, CNN%CNN_Domain)
-
-  ! Combine arrays for CNN input
-  XA = 0.0
-  do j=jsdw,jedw ; do i=isdw,iedw 
-     XA(1,i,j) = WH_SIC(i,j)
-     XA(2,i,j) = WH_SST(i,j)
-     XA(3,i,j) = WH_UI(i,j)
-     XA(4,i,j) = WH_VI(i,j)
-     XA(5,i,j) = WH_HI(i,j)
-     XA(6,i,j) = WH_SW(i,j)
-     XA(7,i,j) = WH_TS(i,j)
-     XA(8,i,j) = WH_SSS(i,j)
-     XA(9,i,j) = WH_mask(i,j)
   enddo ; enddo
 
   ! Run Python script for CNN inference
   dSICN = 0.0
-  do j=js,je ; do i=is,ie
-     do k=1,ncat
-        dSICN(i,j,k) = 0
-     enddo
-  enddo; enddo
-  !call forpy_run_python(XA, XB, dSICN, CS, G, dt_slow)
+  call forpy_run_python(XA, XB, dSICN, CS, dt_slow)
 
-  call pass_var(dSICN, G%Domain)
+  !call pass_var(dSICN, G%Domain)
   if (CNN%id_dSICN>0)  call post_data(CNN%id_dSICN, dSICN, CNN%diag)
 
   !Update category concentrations & bound between 0 and 1

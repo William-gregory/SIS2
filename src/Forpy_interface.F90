@@ -38,76 +38,68 @@ subroutine forpy_run_python_init(CS,python_dir,python_file)
 end subroutine forpy_run_python_init
 
 !> !> Send variables to a python script and output the results
-subroutine forpy_run_python(in1, out1, CS, TopLayer)
+subroutine forpy_run_python(in1, in2, out1, CS, dt_slow)
     type(python_interface),        intent(in)  :: CS     !< Python interface object
-  ! Local Variables
-    logical, intent(in) :: TopLayer             !< If true, only top layer is used.
-    real, dimension(:,:,:,:), &
-                                    intent(in) :: in1     ! input variables.
-    real, dimension(:,:,:,:), &
-                                    intent(inout) :: out1      ! output variables.
-  ! Local Variables for Forpy
+    real, dimension(:,:,:), &
+         intent(in) :: in1     ! input variables (Network A).
+    real, dimension(:,:,:), &
+         intent(in) :: in2     ! input variables (Network B).
+    real, dimension(:,:,:), &
+         intent(inout) :: out1      ! output variables.
+    real, intent(in)   :: dt_slow !< The thermodynamic time step [T ~> s]
+    
+    ! Local Variables for Forpy
     integer :: ierror ! return code from python interfaces
-    type(ndarray) :: in1_py,out_arr         !< variables in the form of numpy array
+    type(ndarray) :: in1_py,in2_py,out_arr         !< variables in the form of numpy array
     type(object)  :: obj                    !< return objects
     type(tuple)   :: args                   !< input arguments for the Python module
-    real, dimension(:,:,:,:), pointer :: out_for  !< outputs from Python module
-    !integer :: current_pe
+    real, dimension(:,:,:), pointer :: out_for  !< outputs from Python module
     integer :: hi, hj ! temporary
-    integer :: i, j, k, l
-    integer :: nztemp, out_num
+    integer :: i, j, k
 
-    !current_pe = PE_here()
+    ! Covert input into Forpy Numpy Arrays 
+    ierror = ndarray_create(in1_py, in1)
+    if (ierror/=0) then; call err_print; endif
+    ierror = ndarray_create(in2_py, in2)
+    if (ierror/=0) then; call err_print; endif
 
-    if (TopLayer) then
-      nztemp = 1
-    else
-      nztemp = size(in1,4)
-    endif
+    ! Create Python Argument 
+    ierror = tuple_create(args,3)
+    if (ierror/=0) then; call err_print; endif
+    ierror = args%setitem(0,in1_py)
+    ierror = args%setitem(1,in2_py)
+    ierror = args%setitem(2,dt_slow)
 
-  ! Covert input into Forpy Numpy Arrays 
-    if (TopLayer) then
-        ierror = ndarray_create(in1_py, in1(:,:,:,1))
-      else
-        ierror = ndarray_create(in1_py, in1)
-      endif
-      if (ierror/=0) then; call err_print; endif
+    if (ierror/=0) then; call err_print; endif
     
-      ! Create Python Argument 
-      ierror = tuple_create(args,3)
-      if (ierror/=0) then; call err_print; endif
-      ierror = args%setitem(0,in1_py)
-      !ierror = args%setitem(1,current_pe)
-      !ierror = args%setitem(2,num_PEs())
-      if (ierror/=0) then; call err_print; endif
-    
-      ! Invoke Python 
-      ierror = call_py(obj, CS%pymodule, "DAML", args)
-      if (ierror/=0) then; call err_print; endif
-      ierror = cast(out_arr, obj)
-      if (ierror/=0) then; call err_print; endif
-      ierror = out_arr%get_data(out_for, order='C')
-      if (ierror/=0) then; call err_print; endif
-    
-      ! Destroy Objects
-      call in1_py%destroy
-      call out_arr%destroy
-      call obj%destroy
-      call args%destroy
+    ! Invoke Python 
+    ierror = call_py(obj, CS%pymodule, "DAML", args)
+    if (ierror/=0) then; call err_print; endif
+    ierror = cast(out_arr, obj)
+    if (ierror/=0) then; call err_print; endif
+    ierror = out_arr%get_data(out_for, order='C')
+    if (ierror/=0) then; call err_print; endif
 
-      ! find the margin size (if order='C')
-      hi = (size(out1,2) - size(out_for,3))/2
-      hj = (size(out1,3) - size(out_for,2))/2
+    out1 = 0.0
+    do i=1,size(out1,1) ; do j=1,size(out1,2) ; do k=1,size(out1,3)
+       out1(i,j,k) = 0 !out_for(i,j,k)
+    enddo; enddo; enddo
+       
+    ! Destroy Objects
+    call in1_py%destroy
+    call in2_py%destroy   
+    call out_arr%destroy
+    call obj%destroy
+    call args%destroy
+
+    ! find the margin size (if order='C')
+    !hi = (size(out1,1) - size(out_for,1))/2
+    !hj = (size(out1,2) - size(out_for,2))/2
     
-      ! Output (out_for in C order has index (nk,nj,ni))
-                      ! in F order has index (ni,nj,nk)
-      out1 = 0.0
-      do k=1,nztemp
-        do j=1,size(out_for,2) ; do i=1,size(out_for,3); do l=1,size(out_for,4)
-          out1(l,i+hi,j+hj,k) = out_for(k,j,i,l) ! if order='C'
-          ! out1(l,i+hi,j+hj,k) = out_for(l,i,j,k) ! if order='F'
-        enddo ; enddo ; enddo
-      enddo
+    !out1 = 0.0    
+    !do j=1,size(out_for,1) ; do i=1,size(out_for,2); do k=1,size(out_for,3)
+    !  out1(i+hi,j+hj,k) = out_for(j,i,k) ! if order='C'    
+    !enddo ; enddo ; enddo
   
 end subroutine forpy_run_python 
 
