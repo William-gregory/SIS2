@@ -229,36 +229,44 @@ subroutine CNN_inference(IST, OSS, FIA, G, IG, CS, US, CNN, dt_slow)
   ! Run Python script for CNN inference
   dSICN = 0.0
   call forpy_run_python(XA, XB, dSICN, CS, dt_slow)
-
+  
+  do j=js,je ; do i=is,ie
+     do k=1,ncat
+        if ((dSICN(i,j,k)>0) .or. (dSICN(i,j,k)<0)) then
+           PRINT *, "CNN INCREMENT", dSICN(i,j,k)
+        endif
+     enddo
+  enddo; enddo
+  
   call pass_var(dSICN, G%Domain)
   if (CNN%id_dSICN>0)  call post_data(CNN%id_dSICN, dSICN, CNN%diag)
 
   !Update category concentrations & bound between 0 and 1
-  posterior = 0.0
-  do j=js,je ; do i=is,ie
-     cvr = 0.0
-     do k=1,ncat
-        posterior(i,j,k) = IST%part_size(i,j,k) + dSICN(i,j,k) 
-        if (posterior(i,j,k)<0) then
-           posterior(i,j,k) = 0
-        endif
-        cvr = cvr + posterior(i,j,k)
-     enddo
-     if (cvr>1) then
-        do k=1,ncat
-           posterior(i,j,k) = posterior(i,j,k)/cvr
-        enddo
-     endif
-     cvr = 0.0
-     do k=1,ncat
-        cvr = cvr + posterior(i,j,k)
-     enddo
-     posterior(i,j,0) = 1 - cvr
-  enddo; enddo
+  !posterior = 0.0
+  !do j=js,je ; do i=is,ie
+  !   cvr = 0.0
+  !   do k=1,ncat
+  !      posterior(i,j,k) = IST%part_size(i,j,k) + dSICN(i,j,k) 
+  !      if (posterior(i,j,k)<0) then
+  !         posterior(i,j,k) = 0
+  !      endif
+  !      cvr = cvr + posterior(i,j,k)
+  !   enddo
+  !   if (cvr>1) then
+  !      do k=1,ncat
+  !         posterior(i,j,k) = posterior(i,j,k)/cvr
+  !      enddo
+  !   endif
+  !   cvr = 0.0
+  !   do k=1,ncat
+  !      cvr = cvr + posterior(i,j,k)
+  !   enddo
+  !   posterior(i,j,0) = 1 - cvr
+  !enddo; enddo
 
   !update sea ice/ocean variables based on corrected sea ice state
-  Ti = min(liquidus_temperature_mush(Si_new/phi_init),-0.1)
-  qi_new = enthalpy_ice(Ti, Si_new)
+  !Ti = min(liquidus_temperature_mush(Si_new/phi_init),-0.1)
+  !qi_new = enthalpy_ice(Ti, Si_new)
   !do j=js,je ; do i=is,ie
   !   cvr = 0.0
   !   do k=1,ncat

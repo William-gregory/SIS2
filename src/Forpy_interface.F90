@@ -80,17 +80,17 @@ subroutine forpy_run_python(in1, in2, out1, CS, dt_slow)
     ierror = out_arr%get_data(out_for, order='C')
     if (ierror/=0) then; call err_print; endif
 
-    out1 = 0.0
-    do i=1,size(out_for,3) ; do j=1,size(out_for,2) ; do k=1,size(out_for,1)
-       out1(i,j,k) = out_for(k,j,i)
-    enddo; enddo; enddo
-       
     ! Destroy Objects
     call in1_py%destroy
     call in2_py%destroy   
     call out_arr%destroy
     call obj%destroy
     call args%destroy
+    
+    out1 = 0.0
+    do i=1,size(out_for,3) ; do j=1,size(out_for,2) ; do k=1,size(out_for,1)
+       out1(i,j,k) = out_for(k,j,i)
+    enddo; enddo; enddo
   
 end subroutine forpy_run_python 
 
