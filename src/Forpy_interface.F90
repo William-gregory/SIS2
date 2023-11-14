@@ -81,8 +81,8 @@ subroutine forpy_run_python(in1, in2, out1, CS, dt_slow)
     if (ierror/=0) then; call err_print; endif
 
     out1 = 0.0
-    do i=1,size(out1,1) ; do j=1,size(out1,2) ; do k=1,size(out1,3)
-       out1(i,j,k) = 0 !out_for(i,j,k)
+    do i=1,size(out_for,3) ; do j=1,size(out_for,2) ; do k=1,size(out_for,1)
+       out1(i,j,k) = out_for(k,j,i)
     enddo; enddo; enddo
        
     ! Destroy Objects
@@ -91,15 +91,6 @@ subroutine forpy_run_python(in1, in2, out1, CS, dt_slow)
     call out_arr%destroy
     call obj%destroy
     call args%destroy
-
-    ! find the margin size (if order='C')
-    !hi = (size(out1,1) - size(out_for,1))/2
-    !hj = (size(out1,2) - size(out_for,2))/2
-    
-    !out1 = 0.0    
-    !do j=1,size(out_for,1) ; do i=1,size(out_for,2); do k=1,size(out_for,3)
-    !  out1(i+hi,j+hj,k) = out_for(j,i,k) ! if order='C'    
-    !enddo ; enddo ; enddo
   
 end subroutine forpy_run_python 
 

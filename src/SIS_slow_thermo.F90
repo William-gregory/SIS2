@@ -474,7 +474,7 @@ subroutine slow_thermodynamics(IST, dt_slow, CS, OSS, FIA, XSF, IOF, G, US, IG)
 
   !!! WG !!!
   if (CS%use_G23_CNN) &       
-       call CNN_inference(IST, OSS, FIA, G, IG, CS%python, CS%CNN, dt_slow)
+       call CNN_inference(IST, OSS, FIA, G, IG, CS%python, US, CS%CNN, dt_slow)
   !!! WG end !!!
 
   if (CS%column_check) &
@@ -1605,7 +1605,7 @@ subroutine SIS_slow_thermo_init(Time, G, US, IG, param_file, diag, CS, tracer_fl
   CS%python_file = trim(CS%python_file)
   if (CS%use_G23_CNN) call forpy_run_python_init(CS%python, &
                               trim(CS%python_dir),trim(CS%python_file))
-  if (CS%use_G23_CNN) call CNN_init(Time, G, US, param_file, diag, CS%CNN)
+  if (CS%use_G23_CNN) call CNN_init(Time, G, param_file, diag, CS%CNN)
   !!! WG END !!!
   
   call SIS2_ice_thm_init(US, param_file, CS%ice_thm_CSp)
