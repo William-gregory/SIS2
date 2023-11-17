@@ -6,7 +6,7 @@ module SIS_G23_CNN
 use ice_grid,                  only : ice_grid_type
 use SIS_hor_grid,              only : SIS_hor_grid_type
 use MOM_domains,               only : clone_MOM_domain,MOM_domain_type
-use MOM_domains,               only : pass_var
+use MOM_domains,               only : pass_var, pass_vector, CGRID_NE
 use SIS_diag_mediator,         only : register_SIS_diag_field
 use SIS_diag_mediator,         only : post_SIS_data, post_data=>post_SIS_data
 use SIS_diag_mediator,         only : SIS_diag_ctrl
@@ -114,17 +114,13 @@ subroutine CNN_inference(IST, OSS, FIA, G, IG, CS, US, CNN, dt_slow)
                                    ::  HI        !< mean ice thickness [m].
   real, dimension(SZI_(G),SZJ_(G)) &
                                    ::  net_sw    !< net shortwave radiation [Wm-2].
-  real, dimension(SZI_(G),SZJ_(G)) &
-                                   ::  siu       !< zonal component of ice velocity (x-direction) [ms-1].
-  real, dimension(SZI_(G),SZJ_(G)) &
-                                   ::  siv       !< meridional component of ice velocity (y-direction) [ms-1].
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
                                    :: WH_SIC     !< aggregate concentrations [dimensionless].
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
                                    :: WH_SST     !< sea-surface temperature [degrees C].
-  real, dimension(SZIW_(CNN),SZJW_(CNN)) &
+  real, dimension(SZIBW_(CNN),SZJW_(CNN)) &
                                    ::  WH_UI     !< zonal ice velocities [ms-1].
-  real, dimension(SZIW_(CNN),SZJW_(CNN)) &
+  real, dimension(SZIW_(CNN),SZJBW_(CNN)) &
                                    ::  WH_VI     !< meridional ice velocities [ms-1].
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
                                    ::  WH_HI     !< mean ice thickness [m].
@@ -186,27 +182,29 @@ subroutine CNN_inference(IST, OSS, FIA, G, IG, CS, US, CNN, dt_slow)
      enddo
   enddo; enddo
 
-  siu = 0.0; siv = 0.0;
-  do i=is-1,ie+1 ; do j=js-1,je+1
-     siu(i,j) = (IST%u_ice_C(I-1,j) + IST%u_ice_C(I,j))/2
-     siv(i,j) = (IST%v_ice_C(i,J-1) + IST%v_ice_C(i,J))/2
+  WH_UI = 0.0
+  do j=js,je ; do i=is,ie+1
+     WH_UI(i,j) = IST%u_ice_C(i,j)
+  enddo; enddo
+
+  WH_VI = 0.0
+  do j=js,je+1 ; do i=is,ie
+     WH_VI(i,j) = IST%v_ice_C(i,j)
   enddo; enddo
   
   !populate variables to pad for CNN halos
-  WH_SIC = 0.0; WH_SST = 0.0 ; WH_UI = 0.0; WH_VI = 0.0; WH_HI = 0.0;
+  WH_SIC = 0.0; WH_SST = 0.0; WH_HI = 0.0;
   WH_SW = 0.0; WH_TS = 0.0; WH_SSS = 0.0; WH_mask = 0.0; XB = 0.0;
   do j=js,je ; do i=is,ie
-     WH_SST(i,j) = OSS%SST_C(i,j) !SST
-     WH_UI(i,j) = siu(i,j) !UI
-     WH_VI(i,j) = siv(i,j) !VI
-     WH_HI(i,j) = HI(i,j) !HI
-     WH_SW(i,j) = net_sw(i,j) !SW
-     WH_TS(i,j) = FIA%Tskin_avg(i,j) !TS
-     WH_SSS(i,j) = OSS%s_surf(i,j) !SSS
+     WH_SST(i,j) = OSS%SST_C(i,j)
+     WH_HI(i,j) = HI(i,j)
+     WH_SW(i,j) = net_sw(i,j)
+     WH_TS(i,j) = FIA%Tskin_avg(i,j)
+     WH_SSS(i,j) = OSS%s_surf(i,j)
      WH_mask(i,j) = G%mask2dT(i,j)
      do k=1,ncat !zeroth index is open water
-        WH_SIC(i,j) = WH_SIC(i,j) + IST%part_size(i,j,k) !siconc
-        XB(k,i,j) = IST%part_size(i,j,k) !CN
+        WH_SIC(i,j) = WH_SIC(i,j) + IST%part_size(i,j,k)
+        XB(k,i,j) = IST%part_size(i,j,k)
      enddo
      XB(6,i,j) = G%mask2dT(i,j)
   enddo ; enddo
@@ -214,8 +212,7 @@ subroutine CNN_inference(IST, OSS, FIA, G, IG, CS, US, CNN, dt_slow)
   ! Update the wide halos
   call pass_var(WH_SIC, CNN%CNN_Domain)
   call pass_var(WH_SST, CNN%CNN_Domain)
-  call pass_var(WH_UI, CNN%CNN_Domain)
-  call pass_var(WH_VI, CNN%CNN_Domain)
+  call pass_vector(WH_UI, WH_VI, CNN%CNN_Domain, stagger=CGRID_NE)
   call pass_var(WH_HI, CNN%CNN_Domain)
   call pass_var(WH_SW, CNN%CNN_Domain)
   call pass_var(WH_TS, CNN%CNN_Domain)
@@ -227,8 +224,8 @@ subroutine CNN_inference(IST, OSS, FIA, G, IG, CS, US, CNN, dt_slow)
   do j=jsdw,jedw ; do i=isdw,iedw 
      XA(1,i,j) = WH_SIC(i,j)
      XA(2,i,j) = WH_SST(i,j)
-     XA(3,i,j) = WH_UI(i,j)
-     XA(4,i,j) = WH_VI(i,j)
+     XA(3,i,j) = (WH_UI(I-1,j) + WH_UI(I,j))/2
+     XA(4,i,j) = (WH_VI(i,J-1) + WH_VI(i,J))/2
      XA(5,i,j) = WH_HI(i,j)
      XA(6,i,j) = WH_SW(i,j)
      XA(7,i,j) = WH_TS(i,j)
@@ -241,19 +238,12 @@ subroutine CNN_inference(IST, OSS, FIA, G, IG, CS, US, CNN, dt_slow)
   call forpy_run_python(XA, XB, dCN, CS, dt_slow)
   call pass_var(dCN, G%Domain)
 
-  do j=js,je ; do i=is,ie
-     do k=1,ncat
-        IST%dCN(i,j,k) = dCN(i,j,k)
-     enddo
-  enddo; enddo
-
-  !if (CNN%id_dcn>0)  call post_data(CNN%id_dcn, dCN, CNN%diag)
-
   !Update category concentrations & bound between 0 and 1
   posterior = 0.0
   do j=js,je ; do i=is,ie
      cvr = 0.0
      do k=1,ncat
+        IST%dCN(i,j,k) = dCN(i,j,k) !save for diagnostic
         posterior(i,j,k) = IST%part_size(i,j,k) + dCN(i,j,k) 
         if (posterior(i,j,k)<0) then
            posterior(i,j,k) = 0
