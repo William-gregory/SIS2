@@ -58,7 +58,7 @@ type, public :: CNN_CS ; private
 
   type(SIS_diag_ctrl), pointer :: diag => NULL() !< A type that regulates diagnostics output
   !>@{ Diagnostic handles
-  integer :: id_dSICN = -1
+  integer :: id_dCN = -1
   !>@}
   
 end type CNN_CS
@@ -80,8 +80,8 @@ subroutine CNN_init(Time,G,param_file,diag,CS)
   ! Register fields for output from this module.
   CS%diag => diag
 
-  CS%id_dSICN = register_SIS_diag_field('ice_model', 'dSICN', diag%axesTc, Time, &
-       'ML-based correction to ice concentration', 'area fraction', missing_value=missing)
+  !CS%id_dcn = register_SIS_diag_field('ice_model', 'dCN', diag%axesTc, Time, &
+  !     'ML-based correction to ice concentration', 'area fraction', missing_value=missing)
 
   call get_param(param_file, mdl, "CNN_HALO_SIZE", CS%CNN_halo_size, &
       "Halo size at each side of subdomains, depends on CNN architecture.", & 
@@ -114,6 +114,10 @@ subroutine CNN_inference(IST, OSS, FIA, G, IG, CS, US, CNN, dt_slow)
                                    ::  HI        !< mean ice thickness [m].
   real, dimension(SZI_(G),SZJ_(G)) &
                                    ::  net_sw    !< net shortwave radiation [Wm-2].
+  real, dimension(SZI_(G),SZJ_(G)) &
+                                   ::  siu       !< zonal component of ice velocity (x-direction) [ms-1].
+  real, dimension(SZI_(G),SZJ_(G)) &
+                                   ::  siv       !< meridional component of ice velocity (y-direction) [ms-1].
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
                                    :: WH_SIC     !< aggregate concentrations [dimensionless].
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
@@ -133,13 +137,13 @@ subroutine CNN_inference(IST, OSS, FIA, G, IG, CS, US, CNN, dt_slow)
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
                                    :: WH_mask    !< land-sea mask (0=land cells, 1=ocean cells)
   real, dimension(9,SZIW_(CNN),SZJW_(CNN)) &
-                                   :: XA         !< input variables to network A (predict dSIC)
+                                   :: XA         !< input variables to network A (predict dsiconc)
   real, dimension(6,SZI_(G),SZJ_(G)) &
-                                   :: XB         !< input variables to network B (predict dSICN)
+                                   :: XB         !< input variables to network B (predict dCN)
   
   !initialise network outputs
   real, dimension(SZI_(G),SZJ_(G),5) &
-                                   :: dSICN      !< network B predictions of category SIC corrections
+                                   :: dCN      !< network B predictions of category SIC corrections
   real, dimension(SZI_(G),SZJ_(G),0:5) &
                                    :: posterior  !< updated part_size (bounded between 0 and 1)
   real, dimension(5) :: hmid
@@ -174,29 +178,35 @@ subroutine CNN_inference(IST, OSS, FIA, G, IG, CS, US, CNN, dt_slow)
   net_sw = 0.0
   do i=is,ie ; do j=js,je !compute net shortwave
      do k=0,ncat
-        sw_cat = 0
+        sw_cat = 0.0
         do b=1,nb
            sw_cat = sw_cat + FIA%flux_sw_top(i,j,k,b)
         enddo
         net_sw(i,j) = net_sw(i,j) + IST%part_size(i,j,k) * sw_cat
      enddo
-  enddo ; enddo
+  enddo; enddo
 
+  siu = 0.0; siv = 0.0;
+  do i=is-1,ie+1 ; do j=js-1,je+1
+     siu(i,j) = (IST%u_ice_C(I-1,j) + IST%u_ice_C(I,j))/2
+     siv(i,j) = (IST%v_ice_C(i,J-1) + IST%v_ice_C(i,J))/2
+  enddo; enddo
+  
   !populate variables to pad for CNN halos
   WH_SIC = 0.0; WH_SST = 0.0 ; WH_UI = 0.0; WH_VI = 0.0; WH_HI = 0.0;
   WH_SW = 0.0; WH_TS = 0.0; WH_SSS = 0.0; WH_mask = 0.0; XB = 0.0;
   do j=js,je ; do i=is,ie
-     WH_SST(i,j) = OSS%SST_C(i,j)
-     WH_UI(i,j) = 0.5*( IST%u_ice_C(I-1,j) + IST%u_ice_C(I,j) ) ! Copy the computational section from UI into cell center
-     WH_VI(i,j) = 0.5*( IST%v_ice_C(i,J-1) + IST%v_ice_C(i,J) ) ! Copy the computational section from VI into cell center
-     WH_HI(i,j) = HI(i,j)
-     WH_SW(i,j) = net_sw(i,j)
-     WH_TS(i,j) = FIA%Tskin_avg(i,j)
-     WH_SSS(i,j) = OSS%s_surf(i,j)
+     WH_SST(i,j) = OSS%SST_C(i,j) !SST
+     WH_UI(i,j) = siu(i,j) !UI
+     WH_VI(i,j) = siv(i,j) !VI
+     WH_HI(i,j) = HI(i,j) !HI
+     WH_SW(i,j) = net_sw(i,j) !SW
+     WH_TS(i,j) = FIA%Tskin_avg(i,j) !TS
+     WH_SSS(i,j) = OSS%s_surf(i,j) !SSS
      WH_mask(i,j) = G%mask2dT(i,j)
      do k=1,ncat !zeroth index is open water
-        WH_SIC(i,j) = WH_SIC(i,j) + IST%part_size(i,j,k)
-        XB(k,i,j) = IST%part_size(i,j,k)
+        WH_SIC(i,j) = WH_SIC(i,j) + IST%part_size(i,j,k) !siconc
+        XB(k,i,j) = IST%part_size(i,j,k) !CN
      enddo
      XB(6,i,j) = G%mask2dT(i,j)
   enddo ; enddo
@@ -227,42 +237,40 @@ subroutine CNN_inference(IST, OSS, FIA, G, IG, CS, US, CNN, dt_slow)
   enddo ; enddo
 
   ! Run Python script for CNN inference
-  dSICN = 0.0
-  call forpy_run_python(XA, XB, dSICN, CS, dt_slow)
-  
+  dCN = 0.0
+  call forpy_run_python(XA, XB, dCN, CS, dt_slow)
+  call pass_var(dCN, G%Domain)
+
   do j=js,je ; do i=is,ie
      do k=1,ncat
-        if ((dSICN(i,j,k)>0) .or. (dSICN(i,j,k)<0)) then
-           PRINT *, "CNN INCREMENT", dSICN(i,j,k)
-        endif
+        IST%dCN(i,j,k) = dCN(i,j,k)
      enddo
   enddo; enddo
-  
-  call pass_var(dSICN, G%Domain)
-  if (CNN%id_dSICN>0)  call post_data(CNN%id_dSICN, dSICN, CNN%diag)
+
+  !if (CNN%id_dcn>0)  call post_data(CNN%id_dcn, dCN, CNN%diag)
 
   !Update category concentrations & bound between 0 and 1
-  !posterior = 0.0
-  !do j=js,je ; do i=is,ie
-  !   cvr = 0.0
-  !   do k=1,ncat
-  !      posterior(i,j,k) = IST%part_size(i,j,k) + dSICN(i,j,k) 
-  !      if (posterior(i,j,k)<0) then
-  !         posterior(i,j,k) = 0
-  !      endif
-  !      cvr = cvr + posterior(i,j,k)
-  !   enddo
-  !   if (cvr>1) then
-  !      do k=1,ncat
-  !         posterior(i,j,k) = posterior(i,j,k)/cvr
-  !      enddo
-  !   endif
-  !   cvr = 0.0
-  !   do k=1,ncat
-  !      cvr = cvr + posterior(i,j,k)
-  !   enddo
-  !   posterior(i,j,0) = 1 - cvr
-  !enddo; enddo
+  posterior = 0.0
+  do j=js,je ; do i=is,ie
+     cvr = 0.0
+     do k=1,ncat
+        posterior(i,j,k) = IST%part_size(i,j,k) + dCN(i,j,k) 
+        if (posterior(i,j,k)<0) then
+           posterior(i,j,k) = 0
+        endif
+        cvr = cvr + posterior(i,j,k)
+     enddo
+     if (cvr>1) then
+        do k=1,ncat
+           posterior(i,j,k) = posterior(i,j,k)/cvr
+        enddo
+     endif
+     cvr = 0.0
+     do k=1,ncat
+        cvr = cvr + posterior(i,j,k)
+     enddo
+     posterior(i,j,0) = 1 - cvr
+  enddo; enddo
 
   !update sea ice/ocean variables based on corrected sea ice state
   !Ti = min(liquidus_temperature_mush(Si_new/phi_init),-0.1)

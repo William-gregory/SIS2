@@ -50,6 +50,7 @@ type, public :: ice_state_diags_type ; private
   integer, dimension(:), allocatable :: id_t, id_sal
   integer :: id_cn = -1, id_hi = -1, id_hp = -1, id_hs = -1, id_tsn = -1, id_ext = -1
   integer :: id_t_iceav = -1, id_s_iceav = -1, id_e2m = -1, id_rdgf = -1, id_rdg_h = -1
+  integer :: id_dcn = -1 !WG
 
   integer :: id_simass = -1, id_simassn = -1, id_sisnmass = -1, id_sivol = -1
   integer :: id_siconc = -1, id_sithick = -1, id_sisnconc = -1, id_sisnthick = -1
@@ -137,6 +138,7 @@ subroutine post_ice_state_diagnostics(IDs, IST, OSS, IOF, dt_slow, Time, G, US, 
   ! Thermodynamic state diagnostics
   !
   if (IDs%id_cn>0) call post_data(IDs%id_cn, IST%part_size(:,:,1:ncat), diag)
+  if (IDs%id_dcn>0) call post_data(IDs%id_dcn, IST%dCN, diag) !WG
   if (IDs%id_simassn>0) call post_data(IDs%id_simassn, IST%mH_ice, diag)
   if ((IDs%id_siconc>0) .or. (IDs%id_siconc_CMOR>0)) then
     diagVar(:,:) = 0.0
@@ -328,6 +330,8 @@ subroutine register_ice_state_diagnostics(Time, IG, US, param_file, diag, IDs)
                'ice modeled', '0 or 1', missing_value=missing)
   IDs%id_cn       = register_diag_field('ice_model', 'CN', diag%axesTc, Time, &
                'ice concentration', '0-1', missing_value=missing)
+  IDs%id_dcn      = register_diag_field('ice_model', 'dCN', diag%axesTc, Time, &
+               'ML-based correction to ice concentration', 'area fraction', missing_value=missing) !WG
   IDs%id_hp       = register_diag_field('ice_model', 'HP', diag%axesT1, Time, &
                'pond thickness', 'm-pond', missing_value=missing) ! mw/new
   IDs%id_hs       = register_diag_field('ice_model', 'HS', diag%axesT1, Time, &
@@ -384,7 +388,7 @@ subroutine register_ice_state_diagnostics(Time, IG, US, param_file, diag, IDs)
   IDs%id_mib  = register_diag_field('ice_model', 'MIB', diag%axesT1, Time, &
                'ice + snow + bergs mass', 'kg/m^2', conversion=US%RZ_to_kg_m2, missing_value=missing)
   IDs%id_e2m  = register_diag_field('ice_model','E2MELT' ,diag%axesT1, Time, &
-               'heat needed to melt ice', 'J/m^2', conversion=US%Q_to_J_kg*US%RZ_to_kg_m2, missing_value=missing)
+       'heat needed to melt ice', 'J/m^2', conversion=US%Q_to_J_kg*US%RZ_to_kg_m2, missing_value=missing)
 
   call get_param(param_file, mdl, "DO_RIDGING", do_ridging, &
                  "If true, call the ridging routines.", default=.false., do_not_log=.true.)
