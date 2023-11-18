@@ -89,7 +89,7 @@ subroutine CNN_init(Time,G,param_file,diag,CS)
 
   wd_halos(1) = CS%CNN_halo_size
   wd_halos(2) = CS%CNN_halo_size
-  call clone_MOM_domain(G%Domain, CS%CNN_Domain, min_halo=wd_halos, symmetric=.true.)
+  call clone_MOM_domain(G%Domain, CS%CNN_Domain, min_halo=wd_halos, symmetric=.false.)
   CS%isdw = G%isc-wd_halos(1) ; CS%iedw = G%iec+wd_halos(1)
   CS%jsdw = G%jsc-wd_halos(2) ; CS%jedw = G%jec+wd_halos(2)
 
@@ -182,14 +182,14 @@ subroutine CNN_inference(IST, OSS, FIA, G, IG, CS, US, CNN, dt_slow)
      enddo
   enddo; enddo
 
-  WH_UI = 0.0
-  do j=js,je ; do i=is,ie+1
-     WH_UI(i,j) = IST%u_ice_C(i,j)
+  WH_UI = 0.0 !js = 5, je = 24 !is = 5, ie = 14
+  do j=js,je ; do i=is-1,ie+1
+     WH_UI(i,j) = IST%u_ice_C(i,j) !UVEL size 19x24
   enddo; enddo
 
   WH_VI = 0.0
-  do j=js,je+1 ; do i=is,ie
-     WH_VI(i,j) = IST%v_ice_C(i,j)
+  do j=js-1,je+1 ; do i=is,ie
+     WH_VI(i,j) = IST%v_ice_C(i,j) !VVEL size 18x25
   enddo; enddo
   
   !populate variables to pad for CNN halos
@@ -208,7 +208,7 @@ subroutine CNN_inference(IST, OSS, FIA, G, IG, CS, US, CNN, dt_slow)
      enddo
      XB(6,i,j) = G%mask2dT(i,j)
   enddo ; enddo
-
+  
   ! Update the wide halos
   call pass_var(WH_SIC, CNN%CNN_Domain)
   call pass_var(WH_SST, CNN%CNN_Domain)
