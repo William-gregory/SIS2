@@ -182,14 +182,14 @@ subroutine CNN_inference(IST, OSS, FIA, G, IG, CS, US, CNN, dt_slow)
      enddo
   enddo; enddo
 
-  WH_UI = 0.0 !js = 5, je = 24 !is = 5, ie = 14
+  WH_UI = 0.0
   do j=js,je ; do i=is-1,ie+1
-     WH_UI(i,j) = IST%u_ice_C(i,j) !UVEL size 19x24
+     WH_UI(i,j) = IST%u_ice_C(i,j)
   enddo; enddo
 
   WH_VI = 0.0
   do j=js-1,je+1 ; do i=is,ie
-     WH_VI(i,j) = IST%v_ice_C(i,j) !VVEL size 18x25
+     WH_VI(i,j) = IST%v_ice_C(i,j)
   enddo; enddo
   
   !populate variables to pad for CNN halos
@@ -202,7 +202,7 @@ subroutine CNN_inference(IST, OSS, FIA, G, IG, CS, US, CNN, dt_slow)
      WH_TS(i,j) = FIA%Tskin_avg(i,j)
      WH_SSS(i,j) = OSS%s_surf(i,j)
      WH_mask(i,j) = G%mask2dT(i,j)
-     do k=1,ncat !zeroth index is open water
+     do k=1,ncat
         WH_SIC(i,j) = WH_SIC(i,j) + IST%part_size(i,j,k)
         XB(k,i,j) = IST%part_size(i,j,k)
      enddo
@@ -263,28 +263,28 @@ subroutine CNN_inference(IST, OSS, FIA, G, IG, CS, US, CNN, dt_slow)
   enddo; enddo
 
   !update sea ice/ocean variables based on corrected sea ice state
-  !Ti = min(liquidus_temperature_mush(Si_new/phi_init),-0.1)
-  !qi_new = enthalpy_ice(Ti, Si_new)
+  Ti = min(liquidus_temperature_mush(Si_new/phi_init),-0.1)
+  qi_new = enthalpy_ice(Ti, Si_new)
   !do j=js,je ; do i=is,ie
   !   cvr = 0.0
   !   do k=1,ncat
-        !have added ice to grid cell which was previously ice free
+  !      !have added ice to grid cell which was previously ice free
   !      if (posterior(i,j,k)>0 .and. IST%part_size(i,j,k)<=0) then
   !         IST%mH_ice(i,j,k) = hmid(k)*rho_ice
   !         IST%mH_snow(i,j,k) = 0
   !         IST%enth_snow(i,j,k,1) = 0
-  !         IST%T_surf(i,j,k) = Ti
+  !         IST%t_surf(i,j,k) = Ti
   !         IST%mH_pond(i,j,k) = 0
   !      do m=1,nlay
   !         IST%enth_ice(i,j,k,m) = qi_new
   !         IST%sal_ice(i,j,k,m) = Si_new
   !      enddo
-  !      !have removed all sea in a grid cell
+        !have removed all sea in a grid cell
   !      elseif (posterior(i,j,k)<=0 .and. IST%part_size(i,j,k)>0) then
   !         IST%mH_ice(i,j,k) = 0
   !         IST%mH_snow(i,j,k) = 0
   !         IST%enth_snow(i,j,k,1) = 0
-  !         IST%T_surf(i,j,k) = OSS%T_fr_ocn(i,j) !freezing point based on salinity
+  !         IST%t_surf(i,j,k) = OSS%T_fr_ocn(i,j) !freezing point based on salinity
   !         IST%mH_pond(i,j,k) = 0
   !         do m=1,nlay
   !            IST%enth_ice(i,j,k,m) = 0
@@ -293,18 +293,18 @@ subroutine CNN_inference(IST, OSS, FIA, G, IG, CS, US, CNN, dt_slow)
   !      endif
   !      cvr = cvr + posterior(i,j,k)
   !   enddo
-  !   !if (cvr>=0.3) then
-  !   !   OSS%SST_C(i,j) = OSS%T_fr_ocn(i,j) !adjust SST under sea ice to freezing point
-  !   !endif
-  !   !if (OSS%SST_C(i,j)<-2) then
-  !   !   OSS%SST_C(i,j) = -2
-  !   !endif
+     !if (cvr>=0.3) then
+     !   OSS%SST_C(i,j) = OSS%T_fr_ocn(i,j) !adjust SST under sea ice to freezing point
+     !endif
+     !if (OSS%SST_C(i,j)<-2) then
+     !   OSS%SST_C(i,j) = -2
+     !endif
   !enddo; enddo
-  !do j=js,je ; do i=is,ie
-  !   do k=0,ncat
-  !      IST%part_size(i,j,k) = posterior(i,j,k)
-  !   enddo
-  !enddo; enddo
+  do j=js,je ; do i=is,ie
+     do k=0,ncat
+        IST%part_size(i,j,k) = posterior(i,j,k)
+     enddo
+  enddo; enddo
      
 end subroutine CNN_inference
 

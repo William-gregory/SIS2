@@ -1057,7 +1057,7 @@ subroutine copy_IST_to_IST(IST_in, IST_out, HI_in, HI_out, IG)
   i_off = HI_out%iec-HI_in%iec ;  j_off = HI_out%jec-HI_in%jec
 
   do k=0,ncat ; do j=jsc,jec ; do i=isc,iec ; i2 = i+i_off ; j2 = j+j_off
-    IST_out%part_size(i2,j2,k) = IST_in%part_size(i,j,k)
+     IST_out%part_size(i2,j2,k) = IST_in%part_size(i,j,k)
   enddo ; enddo ; enddo
 
   if (allocated(IST_out%t_surf) .and. allocated(IST_in%t_surf)) then
