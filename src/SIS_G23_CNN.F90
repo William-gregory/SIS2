@@ -16,6 +16,7 @@ use MOM_diag_mediator,         only : time_type
 use MOM_unit_scaling,          only : unit_scale_type
 use MOM_file_parser,           only : get_param, param_file_type
 use Forpy_interface,           only : forpy_run_python, python_interface
+use SIS2_ice_thm,              only : enth_from_TS, Temp_from_En_S, enthalpy_liquid, enthalpy_liquid_freeze
 
 implicit none; private
 
@@ -115,7 +116,7 @@ subroutine CNN_inference(IST, OSS, FIA, G, IG, CS, US, CNN, dt_slow)
   real, dimension(SZI_(G),SZJ_(G)) &
                                    ::  net_sw    !< net shortwave radiation [Wm-2].
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
-                                   :: WH_SIC     !< aggregate concentrations [dimensionless].
+                                   :: WH_SIC     !< aggregate concentrations [nondim].
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
                                    :: WH_SST     !< sea-surface temperature [degrees C].
   real, dimension(SZIBW_(CNN),SZJW_(CNN)) &
@@ -147,10 +148,14 @@ subroutine CNN_inference(IST, OSS, FIA, G, IG, CS, US, CNN, dt_slow)
   integer :: is, ie, js, je, ncat, nlay
   integer :: isdw, iedw, jsdw, jedw, nb
   real    :: cvr, Ti, qi_new, sw_cat
+  !real    :: min_dEnth_freeze, enthalpy_ocean
+  real, parameter :: LI = 3.34e5 !latent heat of fusion J/kg
   real, parameter :: rho_ice = 905.0
+  real, parameter :: liq_lim = .99
+  real, parameter :: ice_rel_salin = 0.17
   real, parameter :: &    !from ice_therm_vertical.F90
        phi_init = 0.75, & !initial liquid fraction of frazil ice
-       Si_new = 5.0       !salinity of mushy ice
+       Si_new = 5.0       !salinity of mushy ice (ppt)
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; ncat = IG%CatIce ; nlay = IG%NkIce
   isdw = CNN%isdw; iedw = CNN%iedw; jsdw = CNN%jsdw; jedw = CNN%jedw
@@ -171,16 +176,13 @@ subroutine CNN_inference(IST, OSS, FIA, G, IG, CS, US, CNN, dt_slow)
      endif
   enddo; enddo   
 
-  net_sw = 0.0
-  do i=is,ie ; do j=js,je !compute net shortwave
-     do k=0,ncat
-        sw_cat = 0.0
-        do b=1,nb
-           sw_cat = sw_cat + FIA%flux_sw_top(i,j,k,b)
-        enddo
+  do j=js,je !compute net shortwave
+     do i=is,ie ; net_sw(i,j) = 0.0 ; enddo
+     do k=0,ncat ; do i=is,ie
+        sw_cat = 0 ; do b=1,nb ; sw_cat = sw_cat + FIA%flux_sw_top(i,j,k,b) ; enddo
         net_sw(i,j) = net_sw(i,j) + IST%part_size(i,j,k) * sw_cat
-     enddo
-  enddo; enddo
+     enddo; enddo
+  enddo
 
   WH_UI = 0.0
   do j=js,je ; do i=is-1,ie+1
@@ -245,8 +247,8 @@ subroutine CNN_inference(IST, OSS, FIA, G, IG, CS, US, CNN, dt_slow)
      do k=1,ncat
         IST%dCN(i,j,k) = dCN(i,j,k) !save for diagnostic
         posterior(i,j,k) = IST%part_size(i,j,k) + dCN(i,j,k) 
-        if (posterior(i,j,k)<0) then
-           posterior(i,j,k) = 0
+        if (posterior(i,j,k)<0.0) then
+           posterior(i,j,k) = 0.0
         endif
         cvr = cvr + posterior(i,j,k)
      enddo
@@ -261,45 +263,44 @@ subroutine CNN_inference(IST, OSS, FIA, G, IG, CS, US, CNN, dt_slow)
      enddo
      posterior(i,j,0) = 1 - cvr
   enddo; enddo
-
+  
   !update sea ice/ocean variables based on corrected sea ice state
-  Ti = min(liquidus_temperature_mush(Si_new/phi_init),-0.1)
-  qi_new = enthalpy_ice(Ti, Si_new)
-  !do j=js,je ; do i=is,ie
-  !   cvr = 0.0
-  !   do k=1,ncat
-  !      !have added ice to grid cell which was previously ice free
-  !      if (posterior(i,j,k)>0 .and. IST%part_size(i,j,k)<=0) then
-  !         IST%mH_ice(i,j,k) = hmid(k)*rho_ice
-  !         IST%mH_snow(i,j,k) = 0
-  !         IST%enth_snow(i,j,k,1) = 0
-  !         IST%t_surf(i,j,k) = Ti
-  !         IST%mH_pond(i,j,k) = 0
-  !      do m=1,nlay
-  !         IST%enth_ice(i,j,k,m) = qi_new
-  !         IST%sal_ice(i,j,k,m) = Si_new
-  !      enddo
+  !Ti = min(liquidus_temperature_mush(Si_new/phi_init),-0.1)
+  !qi_new = enthalpy_ice(Ti, Si_new)
+  !min_dEnth_freeze = LI * (1.0-liq_lim)
+  do j=js,je ; do i=is,ie
+     !enthalpy_ocean = enthalpy_liquid(OSS%SST_C(i,j), OSS%s_surf(i,j), IST%ITV)
+     do k=1,ncat
+        !have added ice to grid cell which was previously ice free
+        if (posterior(i,j,k)>0.0 .and. IST%part_size(i,j,k)<=0.0) then
+           IST%mH_ice(i,j,k) = hmid(k)*rho_ice
+           IST%mH_snow(i,j,k) = 0.0
+           IST%mH_pond(i,j,k) = 0.0
+           !do m=1,nlay
+           !   IST%enth_ice(i,j,k,m) = min(IST%enth_ice(i,j,k,nlay),enthalpy_ocean-min_dEnth_freeze)
+           !   IST%sal_ice(i,j,k,m) = ice_rel_salin * OSS%s_surf(i,j)
+           !enddo
+           !IST%enth_snow(i,j,k,1) = enth_from_TS(Temp_from_En_S(IST%enth_ice(i,j,k,1), IST%sal_ice(i,j,k,1), &
+           !                                      IST%ITV),0.0, IST%ITV)
         !have removed all sea in a grid cell
-  !      elseif (posterior(i,j,k)<=0 .and. IST%part_size(i,j,k)>0) then
-  !         IST%mH_ice(i,j,k) = 0
-  !         IST%mH_snow(i,j,k) = 0
-  !         IST%enth_snow(i,j,k,1) = 0
-  !         IST%t_surf(i,j,k) = OSS%T_fr_ocn(i,j) !freezing point based on salinity
-  !         IST%mH_pond(i,j,k) = 0
-  !         do m=1,nlay
-  !            IST%enth_ice(i,j,k,m) = 0
-  !            IST%sal_ice(i,j,k,m) = 0
-  !         enddo
-  !      endif
-  !      cvr = cvr + posterior(i,j,k)
-  !   enddo
-     !if (cvr>=0.3) then
+        elseif (posterior(i,j,k)<=0.0 .and. IST%part_size(i,j,k)>0.0) then
+           IST%mH_ice(i,j,k) = 0.0
+           IST%mH_snow(i,j,k) = 0.0
+           IST%mH_pond(i,j,k) = 0.0
+           IST%enth_snow(i,j,k,1) = 0.0 !apparently shouldnt need to change this? according to SIS_slow_thermo.F90 
+           do m=1,nlay
+              IST%enth_ice(i,j,k,m) = 0.0
+              IST%sal_ice(i,j,k,m) = 0.0
+           enddo
+        endif
+     enddo
+     !if ((1-posterior(i,j,0))>=0.3) then
      !   OSS%SST_C(i,j) = OSS%T_fr_ocn(i,j) !adjust SST under sea ice to freezing point
      !endif
      !if (OSS%SST_C(i,j)<-2) then
      !   OSS%SST_C(i,j) = -2
      !endif
-  !enddo; enddo
+  enddo; enddo
   do j=js,je ; do i=is,ie
      do k=0,ncat
         IST%part_size(i,j,k) = posterior(i,j,k)
