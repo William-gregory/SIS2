@@ -276,6 +276,7 @@ subroutine CNN_inference(IST, OSS, FIA, G, IG, CS, US, CNN, dt_slow)
            IST%mH_ice(i,j,k) = hmid(k)*rho_ice
            IST%mH_snow(i,j,k) = 0.0
            IST%mH_pond(i,j,k) = 0.0
+           IST%enth_snow(i,j,k,1) = 0.0
            !do m=1,nlay
            !   IST%enth_ice(i,j,k,m) = min(IST%enth_ice(i,j,k,nlay),enthalpy_ocean-min_dEnth_freeze)
            !   IST%sal_ice(i,j,k,m) = ice_rel_salin * OSS%s_surf(i,j)
