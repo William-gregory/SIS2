@@ -118,9 +118,9 @@ subroutine CNN_inference(IST, OSS, FIA, G, IG, CS, US, CNN, dt_slow)
                                    :: WH_SIC     !< aggregate concentrations [nondim].
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
                                    :: WH_SST     !< sea-surface temperature [degrees C].
-  real, dimension(SZIBW_(CNN),SZJW_(CNN)) &
+  real, dimension(SZIW_(CNN),SZJW_(CNN)) &
                                    ::  WH_UI     !< zonal ice velocities [ms-1].
-  real, dimension(SZIW_(CNN),SZJBW_(CNN)) &
+  real, dimension(SZIW_(CNN),SZJW_(CNN)) &
                                    ::  WH_VI     !< meridional ice velocities [ms-1].
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
                                    ::  WH_HI     !< mean ice thickness [m].
@@ -129,7 +129,7 @@ subroutine CNN_inference(IST, OSS, FIA, G, IG, CS, US, CNN, dt_slow)
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
                                    ::  WH_TS     !< ice-surface skin temperature [degrees C].
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
-                                   ::  WH_SSS    !< sea-surface salinity [psu].
+                                   ::  WH_SSS    !< sea-surface salinity [ppt].
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
                                    :: WH_mask    !< land-sea mask (0=land cells, 1=ocean cells)
   real, dimension(9,SZIW_(CNN),SZJW_(CNN)) &
@@ -179,22 +179,14 @@ subroutine CNN_inference(IST, OSS, FIA, G, IG, CS, US, CNN, dt_slow)
         net_sw(i,j) = net_sw(i,j) + IST%part_size(i,j,k) * sw_cat
      enddo; enddo
   enddo
-
-  WH_UI = 0.0
-  do j=js,je ; do i=is-1,ie+1
-     WH_UI(i,j) = IST%u_ice_C(i,j)
-  enddo; enddo
-
-  WH_VI = 0.0
-  do j=js-1,je+1 ; do i=is,ie
-     WH_VI(i,j) = IST%v_ice_C(i,j)
-  enddo; enddo
   
   !populate variables to pad for CNN halos
-  WH_SIC = 0.0; WH_SST = 0.0; WH_HI = 0.0;
+  WH_SIC = 0.0; WH_SST = 0.0; WH_UI = 0.0; WH_VI = 0.0; WH_HI = 0.0;
   WH_SW = 0.0; WH_TS = 0.0; WH_SSS = 0.0; WH_mask = 0.0; XB = 0.0;
   do j=js,je ; do i=is,ie
      WH_SST(i,j) = OSS%SST_C(i,j)
+     WH_UI(i,j) = IST%u_ice_C(i,j)
+     WH_VI(i,j) = IST%v_ice_C(i,j)
      WH_HI(i,j) = HI(i,j)
      WH_SW(i,j) = net_sw(i,j)
      WH_TS(i,j) = FIA%Tskin_avg(i,j)
