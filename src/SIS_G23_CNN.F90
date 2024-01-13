@@ -7,6 +7,8 @@ use ice_grid,                  only : ice_grid_type
 use SIS_hor_grid,              only : SIS_hor_grid_type
 use MOM_domains,               only : clone_MOM_domain,MOM_domain_type
 use MOM_domains,               only : pass_var, pass_vector, CGRID_NE
+use MOM_io,                    only : MOM_read_data
+use MOM_time_manager,          only : get_date, get_time, set_date, operator(-)
 use SIS_diag_mediator,         only : register_SIS_diag_field
 use SIS_diag_mediator,         only : post_SIS_data, post_data=>post_SIS_data
 use SIS_diag_mediator,         only : SIS_diag_ctrl
@@ -89,16 +91,20 @@ subroutine CNN_init(Time,G,param_file,diag,CS)
 
   wd_halos(1) = CS%CNN_halo_size
   wd_halos(2) = CS%CNN_halo_size
-  call clone_MOM_domain(G%Domain, CS%CNN_Domain, min_halo=wd_halos, symmetric=.false.)
+  if (G%symmetric) then
+     call clone_MOM_domain(G%Domain, CS%CNN_Domain, min_halo=wd_halos, symmetric=.true.)
+  else
+     call clone_MOM_domain(G%Domain, CS%CNN_Domain, min_halo=wd_halos, symmetric=.false.)
+  endif
   CS%isdw = G%isc-wd_halos(1) ; CS%iedw = G%iec+wd_halos(1)
   CS%jsdw = G%jsc-wd_halos(2) ; CS%jedw = G%jec+wd_halos(2)
 
 end subroutine CNN_init
 
 !> Manage input and output of CNN model
-subroutine CNN_inference(IST, OSS, FIA, G, IG, CS, US, CNN, dt_slow)
+subroutine CNN_inference(IST, OSS, FIA, G, IG, CS, US, CNN, dt_slow, Time)
   type(ice_state_type),      intent(inout)  :: IST !< A type describing the state of the sea ice
-  type(fast_ice_avg_type),   intent(in)     :: FIA !< A type containing averages of fields
+  type(fast_ice_avg_type),   intent(inout)  :: FIA !< A type containing averages of fields
                                                    !! (mostly fluxes) over the fast updates
   type(ocean_sfc_state_type), intent(inout) :: OSS !< A structure containing the arrays that describe
                                                    !! the ocean's surface state for the ice model.
@@ -108,11 +114,12 @@ subroutine CNN_inference(IST, OSS, FIA, G, IG, CS, US, CNN, dt_slow)
   type(unit_scale_type),     intent(in)     :: US  !< A structure with unit conversion factors
   type(CNN_CS),              intent(in)     :: CNN    !< Control structure for CNN
   real,                      intent(in)     :: dt_slow !< The thermodynamic time step [T ~> s]
+  type(time_type),           intent(in)     :: Time       !< The current model time. 
 
   !initialise input variables with wide halos
   real, dimension(SZI_(G),SZJ_(G)) &
                                    ::  HI        !< mean ice thickness [m].
-  real, dimension(SZI_(G),SZJ_(G)) &
+  real, dimension(SZI_(G),SZJ_(G),1) &
                                    ::  net_sw    !< net shortwave radiation [Wm-2].
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
                                    :: WH_SIC     !< aggregate concentrations [nondim].
@@ -140,13 +147,18 @@ subroutine CNN_inference(IST, OSS, FIA, G, IG, CS, US, CNN, dt_slow)
   !initialise network outputs
   real, dimension(SZI_(G),SZJ_(G),5) &
                                    :: dCN      !< network B predictions of category SIC corrections
+  !real, dimension(SZI_(G),SZJ_(G),14) &
+  !                                 :: dCN      !< network B predictions of category SIC corrections
   real, dimension(SZI_(G),SZJ_(G),0:5) &
                                    :: posterior  !< updated part_size (bounded between 0 and 1)
   real, dimension(5) :: hmid
   integer :: b, i, j, k, m
   integer :: is, ie, js, je, ncat, nlay
   integer :: isdw, iedw, jsdw, jedw, nb
+  integer :: year, month, day, hour, minute, second
+  integer :: sec, yr_days
   real    :: cvr, Ti, qi_new, sw_cat
+  character(76) :: filename
   
   real, parameter :: rho_ice = 905.0
   real, parameter :: &    !from ice_therm_vertical.F90
@@ -160,40 +172,41 @@ subroutine CNN_inference(IST, OSS, FIA, G, IG, CS, US, CNN, dt_slow)
   hmid = 0.0; HI = 0.0
   hmid(1) = 0.05 ; hmid(2) = 0.2 ; hmid(3) = 0.5 ; hmid(4) = 0.9 ; hmid(5) = 1.1
   do i=is,ie ; do j=js,je !compute sithick
-     cvr = 0.0
+     cvr = 1 - IST%part_size(i,j,0)
      do k=1,ncat
         HI(i,j) = HI(i,j) + IST%part_size(i,j,k)*(IST%mH_ice(i,j,k)*(US%Z_to_m/rho_ice))
-        cvr = cvr + IST%part_size(i,j,k)
      enddo
      if (cvr > 0.) then
         HI(i,j) = HI(i,j) / cvr
      else
         HI(i,j) = 0.0
      endif
-  enddo; enddo   
+  enddo; enddo
 
-  do j=js,je !compute net shortwave
-     do i=is,ie ; net_sw(i,j) = 0.0 ; enddo
-     do k=0,ncat ; do i=is,ie
-        sw_cat = 0 ; do b=1,nb ; sw_cat = sw_cat + FIA%flux_sw_top(i,j,k,b) ; enddo
-        net_sw(i,j) = net_sw(i,j) + IST%part_size(i,j,k) * sw_cat
-     enddo; enddo
-  enddo
+  !Network does not generalize to diurnal cycle of net shortwave, so will use a daily climatology instead
+  year = 0; month = 0; day = 0; hour = 0; minute = 0; second = 0
+  sec = 0; yr_days = 0; net_sw = 0.0
+  call get_date(Time, year, month, day, hour, minute, second)
+  call get_time(Time - set_date(year, 1, 1, 0, 0, 0), sec, yr_days)
+  write(filename, "(A,I3.3,A)") "/lustre/f2/dev/William.Gregory/CNNForpy/SWclim/1982-2017_netSWclim_day", yr_days + 1, ".nc"
+  call MOM_read_data(filename=filename, fieldname='SW', data=net_sw, MOM_Domain=G%Domain, timelevel=1, global_file=.true.)
+
+  call pass_vector(IST%u_ice_C, IST%v_ice_C, G%Domain, stagger=CGRID_NE)
   
   !populate variables to pad for CNN halos
-  WH_SIC = 0.0; WH_SST = 0.0; WH_UI = 0.0; WH_VI = 0.0; WH_HI = 0.0;
-  WH_SW = 0.0; WH_TS = 0.0; WH_SSS = 0.0; WH_mask = 0.0; XB = 0.0;
+  WH_SIC = 0.0; WH_SST = 0.0; WH_HI = 0.0; WH_UI = 0.0; WH_VI = 0.0
+  WH_TS = 0.0; WH_SSS = 0.0; WH_mask = 0.0; XB = 0.0;
   do j=js,je ; do i=is,ie
+     WH_SIC(i,j) = 1 - IST%part_size(i,j,0)
      WH_SST(i,j) = OSS%SST_C(i,j)
-     WH_UI(i,j) = IST%u_ice_C(i,j)
-     WH_VI(i,j) = IST%v_ice_C(i,j)
+     WH_UI(i,j) = (IST%u_ice_C(I-1,j) + IST%u_ice_C(I,j))/2
+     WH_VI(i,j) = (IST%v_ice_C(i,J-1) + IST%v_ice_C(i,J))/2
      WH_HI(i,j) = HI(i,j)
-     WH_SW(i,j) = net_sw(i,j)
+     WH_SW(i,j) = net_sw(i,j,1)
      WH_TS(i,j) = FIA%Tskin_avg(i,j)
      WH_SSS(i,j) = OSS%s_surf(i,j)
      WH_mask(i,j) = G%mask2dT(i,j)
      do k=1,ncat
-        WH_SIC(i,j) = WH_SIC(i,j) + IST%part_size(i,j,k)
         XB(k,i,j) = IST%part_size(i,j,k)
      enddo
      XB(6,i,j) = G%mask2dT(i,j)
@@ -214,8 +227,8 @@ subroutine CNN_inference(IST, OSS, FIA, G, IG, CS, US, CNN, dt_slow)
   do j=jsdw,jedw ; do i=isdw,iedw 
      XA(1,i,j) = WH_SIC(i,j)
      XA(2,i,j) = WH_SST(i,j)
-     XA(3,i,j) = (WH_UI(I-1,j) + WH_UI(I,j))/2
-     XA(4,i,j) = (WH_VI(i,J-1) + WH_VI(i,J))/2
+     XA(3,i,j) = WH_UI(i,j)
+     XA(4,i,j) = WH_VI(i,j)
      XA(5,i,j) = WH_HI(i,j)
      XA(6,i,j) = WH_SW(i,j)
      XA(7,i,j) = WH_TS(i,j)
@@ -227,6 +240,31 @@ subroutine CNN_inference(IST, OSS, FIA, G, IG, CS, US, CNN, dt_slow)
   dCN = 0.0
   call forpy_run_python(XA, XB, dCN, CS, dt_slow)
   call pass_var(dCN, G%Domain)
+  
+  !do j=js,je ; do i=is,ie
+  !   do k=1,ncat
+  !      IST%dCN(i,j,k) = dCN(i,j,k)
+  !   enddo
+  !   IST%WG_SIC(i,j) = dCN(i,j,6)
+  !   IST%WG_SST(i,j) = dCN(i,j,7)
+  !   IST%WG_UI(i,j) = dCN(i,j,8)
+  !   IST%WG_VI(i,j) = dCN(i,j,9)
+  !   IST%WG_HI(i,j) = dCN(i,j,10)
+  !   IST%WG_SW(i,j) = dCN(i,j,11)
+  !   IST%WG_TS(i,j) = dCN(i,j,12)
+  !   IST%WG_SSS(i,j) = dCN(i,j,13)
+  !   IST%WG_mask(i,j) = dCN(i,j,14)
+  !enddo; enddo
+
+  !call pass_var(IST%WG_SIC, G%Domain)
+  !call pass_var(IST%WG_SST, G%Domain)
+  !call pass_vector(IST%WG_UI, IST%WG_VI, G%Domain, stagger=CGRID_NE)
+  !call pass_var(IST%WG_HI, G%Domain)
+  !call pass_var(IST%WG_SW, G%Domain)
+  !call pass_var(IST%WG_TS, G%Domain)
+  !call pass_var(IST%WG_SSS, G%Domain)
+  !call pass_var(IST%WG_mask, G%Domain)
+  !call pass_var(IST%dCN, G%Domain)
 
   !Update category concentrations & bound between 0 and 1
   posterior = 0.0
@@ -234,7 +272,7 @@ subroutine CNN_inference(IST, OSS, FIA, G, IG, CS, US, CNN, dt_slow)
      cvr = 0.0
      do k=1,ncat
         IST%dCN(i,j,k) = dCN(i,j,k) !save for diagnostic
-        posterior(i,j,k) = IST%part_size(i,j,k) + dCN(i,j,k) 
+        posterior(i,j,k) = IST%part_size(i,j,k) + IST%dCN(i,j,k) 
         if (posterior(i,j,k)<0.0) then
            posterior(i,j,k) = 0.0
         endif
@@ -246,7 +284,7 @@ subroutine CNN_inference(IST, OSS, FIA, G, IG, CS, US, CNN, dt_slow)
         enddo
      endif
      cvr = 0.0
-     do k=1,ncat
+    do k=1,ncat
         cvr = cvr + posterior(i,j,k)
      enddo
      posterior(i,j,0) = 1 - cvr

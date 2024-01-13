@@ -201,7 +201,7 @@ subroutine post_flux_diagnostics(IST, FIA, IOF, CS, G, US, IG, Idt_slow)
       do k=0,ncat ; do i=isc,iec
         sw_cat = 0 ; do b=1,nb ; sw_cat = sw_cat + FIA%flux_sw_top(i,j,k,b) ; enddo
         net_sw(i,j) = net_sw(i,j) + IST%part_size(i,j,k) * sw_cat
-      enddo ; enddo
+      enddo; enddo
     enddo
     if (FIA%id_sw>0) call post_data(FIA%id_sw, net_sw, CS%diag)
     if (FIA%id_albedo>0) then
@@ -455,6 +455,10 @@ subroutine slow_thermodynamics(IST, dt_slow, CS, OSS, FIA, XSF, IOF, G, US, IG)
   endif
 
   !  Other routines that do thermodynamic vertical processes should be added here
+  !!! WG !!!
+  if (CS%use_G23_CNN) &       
+       call CNN_inference(IST, OSS, FIA, G, IG, CS%python, US, CS%CNN, dt_slow, CS%Time)
+  !!! WG end !!!
 
   ! Do tracer column physics
   call enable_SIS_averaging(US%T_to_s*dt_slow, CS%Time, CS%diag)
@@ -471,11 +475,6 @@ subroutine slow_thermodynamics(IST, dt_slow, CS, OSS, FIA, XSF, IOF, G, US, IG)
                               message="      Post_thermo A", check_column=.true.)
   call adjust_ice_categories(IST%mH_ice, IST%mH_snow, IST%mH_pond, IST%part_size, &
        IST%TrReg, G, IG, CS%SIS_transport_CSp) !Niki: add ridging?
-
-  !!! WG !!!
-  if (CS%use_G23_CNN) &       
-       call CNN_inference(IST, OSS, FIA, G, IG, CS%python, US, CS%CNN, dt_slow)
-  !!! WG end !!!
 
   if (CS%column_check) &
     call write_ice_statistics(IST, CS%Time, CS%n_calls, G, US, IG, CS%sum_output_CSp, &

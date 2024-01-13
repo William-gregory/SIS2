@@ -1541,7 +1541,6 @@ subroutine SIS_C_dynamics(ci, mis, mice, ui, vi, uo, vo, fxat, fyat, &
       call post_SIS_data(CS%id_del_sh_min, diag_val, CS%diag)
     endif
     if (CS%id_siu>0 .or. CS%id_siv>0 .or. CS%id_sispeed>0) then
-
       do j=jsc-1,jec+1 ; do i=isc-1,iec+1
         if (mis(i,j) > 0.0) then
           siu(i,j) = (ui(I-1,j) + ui(I,j))/2

@@ -51,6 +51,8 @@ type, public :: ice_state_diags_type ; private
   integer :: id_cn = -1, id_hi = -1, id_hp = -1, id_hs = -1, id_tsn = -1, id_ext = -1
   integer :: id_t_iceav = -1, id_s_iceav = -1, id_e2m = -1, id_rdgf = -1, id_rdg_h = -1
   integer :: id_dcn = -1 !WG
+  !integer :: id_WG_SIC = -1, id_WG_SST = -1, id_WG_UI = -1, id_WG_VI = -1, id_WG_HI = -1 !WG
+  !integer :: id_WG_SW = -1, id_WG_TS = -1, id_WG_SSS = -1, id_WG_mask = -1 !WG
 
   integer :: id_simass = -1, id_simassn = -1, id_sisnmass = -1, id_sivol = -1
   integer :: id_siconc = -1, id_sithick = -1, id_sisnconc = -1, id_sisnthick = -1
@@ -139,6 +141,15 @@ subroutine post_ice_state_diagnostics(IDs, IST, OSS, IOF, dt_slow, Time, G, US, 
   !
   if (IDs%id_cn>0) call post_data(IDs%id_cn, IST%part_size(:,:,1:ncat), diag)
   if (IDs%id_dcn>0) call post_data(IDs%id_dcn, IST%dCN, diag) !WG
+  !if (IDs%id_WG_SIC>0) call post_data(IDs%id_WG_SIC, IST%WG_SIC, diag) !WG
+  !if (IDs%id_WG_SST>0) call post_data(IDs%id_WG_SST, IST%WG_SST, diag) !WG
+  !if (IDs%id_WG_UI>0) call post_data(IDs%id_WG_UI, IST%WG_UI, diag) !WG
+  !if (IDs%id_WG_VI>0) call post_data(IDs%id_WG_VI, IST%WG_VI, diag) !WG
+  !if (IDs%id_WG_HI>0) call post_data(IDs%id_WG_HI, IST%WG_HI, diag) !WG
+  !if (IDs%id_WG_SW>0) call post_data(IDs%id_WG_SW, IST%WG_SW, diag) !WG
+  !if (IDs%id_WG_TS>0) call post_data(IDs%id_WG_TS, IST%WG_TS, diag) !WG
+  !if (IDs%id_WG_SSS>0) call post_data(IDs%id_WG_SSS, IST%WG_SSS, diag) !WG
+  !if (IDs%id_WG_mask>0) call post_data(IDs%id_WG_mask, IST%WG_mask, diag) !WG
   if (IDs%id_simassn>0) call post_data(IDs%id_simassn, IST%mH_ice, diag)
   if ((IDs%id_siconc>0) .or. (IDs%id_siconc_CMOR>0)) then
     diagVar(:,:) = 0.0
@@ -332,6 +343,24 @@ subroutine register_ice_state_diagnostics(Time, IG, US, param_file, diag, IDs)
                'ice concentration', '0-1', missing_value=missing)
   IDs%id_dcn      = register_diag_field('ice_model', 'dCN', diag%axesTc, Time, &
                'ML-based correction to ice concentration', 'area fraction', missing_value=missing) !WG
+  !IDs%id_WG_SIC      = register_diag_field('ice_model', 'WG_SIC', diag%axesT1, Time, &
+  !             'ice concentration', '0-1', missing_value=missing) !WG
+  !IDs%id_WG_SST      = register_diag_field('ice_model', 'WG_SST', diag%axesT1, Time, &
+  !             'sea-surface temperature', 'C', missing_value=missing) !WG
+  !IDs%id_WG_UI      = register_diag_field('ice_model', 'WG_UI', diag%axesT1, Time, &
+  !             'zonal component of ice velocity', 'ms-1', missing_value=missing) !WG
+  !IDs%id_WG_VI      = register_diag_field('ice_model', 'WG_VI', diag%axesT1, Time, &
+  !             'meridional component of ice velocity', 'ms-1', missing_value=missing) !WG
+  !IDs%id_WG_HI      = register_diag_field('ice_model', 'WG_HI', diag%axesT1, Time, &
+  !             'mean sea ice thickness', 'm=ice', missing_value=missing) !WG
+  !IDs%id_WG_SW      = register_diag_field('ice_model', 'WG_SW', diag%axesT1, Time, &
+  !             'net shortwave radiation', 'Wm-2', missing_value=missing) !WG
+  !IDs%id_WG_TS      = register_diag_field('ice_model', 'WG_TS', diag%axesT1, Time, &
+  !             'ice-surface skin temperature', 'C', missing_value=missing) !WG
+  !IDs%id_WG_SSS      = register_diag_field('ice_model', 'WG_SSS', diag%axesT1, Time, &
+  !             'sea-surface salinity', 'ppt', missing_value=missing) !WG
+  !IDs%id_WG_mask      = register_diag_field('ice_model', 'WG_mask', diag%axesT1, Time, &
+  !             'land-sea mask', '0 or 1', missing_value=missing) !WG
   IDs%id_hp       = register_diag_field('ice_model', 'HP', diag%axesT1, Time, &
                'pond thickness', 'm-pond', missing_value=missing) ! mw/new
   IDs%id_hs       = register_diag_field('ice_model', 'HS', diag%axesT1, Time, &
