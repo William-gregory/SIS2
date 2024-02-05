@@ -119,7 +119,7 @@ subroutine CNN_inference(IST, OSS, FIA, G, IG, CS, US, CNN, dt_slow, Time)
   !initialise input variables with wide halos
   real, dimension(SZI_(G),SZJ_(G)) &
                                    ::  HI        !< mean ice thickness [m].
-  real, dimension(SZI_(G),SZJ_(G),1) &
+  real, dimension(SZI_(G),SZJ_(G)) &
                                    ::  net_sw    !< net shortwave radiation [Wm-2].
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
                                    :: WH_SIC     !< aggregate concentrations [nondim].
@@ -158,7 +158,7 @@ subroutine CNN_inference(IST, OSS, FIA, G, IG, CS, US, CNN, dt_slow, Time)
   integer :: year, month, day, hour, minute, second
   integer :: sec, yr_days
   real    :: cvr, Ti, qi_new, sw_cat
-  character(76) :: filename
+  character(85) :: filename
   
   real, parameter :: rho_ice = 905.0
   real, parameter :: &    !from ice_therm_vertical.F90
@@ -183,26 +183,37 @@ subroutine CNN_inference(IST, OSS, FIA, G, IG, CS, US, CNN, dt_slow, Time)
      endif
   enddo; enddo
 
+  net_sw = 0.0
+  do j=js,je; do i=is,ie
+      do k=0,ncat
+         sw_cat = 0
+         do b=1,nb
+            sw_cat = sw_cat + FIA%flux_sw_top(i,j,k,b)
+         enddo
+         net_sw(i,j) = net_sw(i,j) + IST%part_size(i,j,k) * sw_cat
+      enddo
+  enddo; enddo
+
   !Network does not generalize to diurnal cycle of net shortwave, so will use a daily climatology instead
-  year = 0; month = 0; day = 0; hour = 0; minute = 0; second = 0
-  sec = 0; yr_days = 0; net_sw = 0.0
-  call get_date(Time, year, month, day, hour, minute, second)
-  call get_time(Time - set_date(year, 1, 1, 0, 0, 0), sec, yr_days)
-  write(filename, "(A,I3.3,A)") "/lustre/f2/dev/William.Gregory/CNNForpy/SWclim/1982-2017_netSWclim_day", yr_days + 1, ".nc"
-  call MOM_read_data(filename=filename, fieldname='SW', data=net_sw, MOM_Domain=G%Domain, timelevel=1, global_file=.true.)
+  !year = 0; month = 0; day = 0; hour = 0; minute = 0; second = 0
+  !sec = 0; yr_days = 0; net_sw = 0.0
+  !call get_date(Time, year, month, day, hour, minute, second)
+  !call get_time(Time - set_date(year, 1, 1, 0, 0, 0), sec, yr_days)
+  !write(filename, "(A,I3.3,A)") "/gpfs/f5/gfdl_o/scratch/William.Gregory/CNNForpy/SWclim/1982-2017_netSWclim_day", yr_days + 1, ".nc"
+  !call MOM_read_data(filename=filename, fieldname='SW', data=net_sw, MOM_Domain=G%Domain, timelevel=1, global_file=.true.)
 
   call pass_vector(IST%u_ice_C, IST%v_ice_C, G%Domain, stagger=CGRID_NE)
   
   !populate variables to pad for CNN halos
   WH_SIC = 0.0; WH_SST = 0.0; WH_HI = 0.0; WH_UI = 0.0; WH_VI = 0.0
-  WH_TS = 0.0; WH_SSS = 0.0; WH_mask = 0.0; XB = 0.0;
+  WH_TS = 0.0; WH_SSS = 0.0; WH_mask = 0.0; XB = 0.0; WH_SW = 0.0
   do j=js,je ; do i=is,ie
      WH_SIC(i,j) = 1 - IST%part_size(i,j,0)
      WH_SST(i,j) = OSS%SST_C(i,j)
      WH_UI(i,j) = (IST%u_ice_C(I-1,j) + IST%u_ice_C(I,j))/2
      WH_VI(i,j) = (IST%v_ice_C(i,J-1) + IST%v_ice_C(i,J))/2
      WH_HI(i,j) = HI(i,j)
-     WH_SW(i,j) = net_sw(i,j,1)
+     WH_SW(i,j) = net_sw(i,j)
      WH_TS(i,j) = FIA%Tskin_avg(i,j)
      WH_SSS(i,j) = OSS%s_surf(i,j)
      WH_mask(i,j) = G%mask2dT(i,j)
