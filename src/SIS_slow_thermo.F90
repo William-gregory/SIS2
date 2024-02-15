@@ -457,7 +457,7 @@ subroutine slow_thermodynamics(IST, dt_slow, CS, OSS, FIA, XSF, IOF, G, US, IG)
   !  Other routines that do thermodynamic vertical processes should be added here
   !!! WG !!!
   if (CS%use_G23_CNN) &       
-       call CNN_inference(IST, OSS, FIA, IOF, G, IG, CS%python, US, CS%CNN, dt_slow, CS%Time)
+       call CNN_inference(IST, OSS, FIA, IOF,  G, IG, CS%python, US, CS%CNN, dt_slow, CS%Time)
   !!! WG end !!!
 
   ! Do tracer column physics
@@ -796,6 +796,12 @@ subroutine SIS2_thermodynamics(IST, dt_slow, CS, OSS, FIA, IOF, G, US, IG)
       endif
     enddo ; enddo
   endif
+
+  !WG
+  !if (CS%use_G23_CNN) &       
+  !     call CNN_inference(IST, OSS, FIA, IOF, G, IG, CS%python, US, CS%CNN, dt_slow, CS%Time)
+  !WG end
+
   call cpu_clock_end(iceClock6)
 
 
@@ -903,6 +909,7 @@ subroutine SIS2_thermodynamics(IST, dt_slow, CS, OSS, FIA, IOF, G, US, IG)
 !$OMP                                  tot_heat_in,enth_imb,mass_imb,norm_enth_imb, &
 !$OMP                                  m_lay, mtot_ice, TrLay,sw_tot,               &
 !$OMP                                  I_part,enth_snowfall)
+  
   do j=jsc,jec ; do k=1,ncat ; do i=isc,iec
     if (G%mask2dT(i,j) > 0 .and. IST%part_size(i,j,k) > 0) then
       ! reshape the ice based on fluxes
@@ -1046,7 +1053,6 @@ subroutine SIS2_thermodynamics(IST, dt_slow, CS, OSS, FIA, IOF, G, US, IG)
   !$OMP                                  mtot_ice,frazil_cat,k_merge,part_sum,fill_frac,d_enth,   &
   !$OMP                                  TrLay,I_part,enth_snowfall)
   do j=jsc,jec ; do i=isc,iec ; if (FIA%frazil_left(i,j)>0.0) then
-
     frazil_cat(1:ncat) = 0.0
     k_merge = 1  ! Find the category that will be combined with the ice free category.
     if (.not.CS%filling_frazil) then

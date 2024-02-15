@@ -15,7 +15,7 @@ use SIS_diag_mediator,         only : post_SIS_data, post_data=>post_SIS_data
 use SIS_diag_mediator,         only : SIS_diag_ctrl
 use SIS_types,                 only : ice_state_type, ocean_sfc_state_type, fast_ice_avg_type, ice_ocean_flux_type
 use SIS_utils,                 only : get_avg
-use SIS2_ice_thm,              only : get_SIS2_thermo_coefs
+use SIS2_ice_thm,              only : get_SIS2_thermo_coefs, enthalpy_liquid_freeze
 use MOM_diag_mediator,         only : time_type
 use MOM_unit_scaling,          only : unit_scale_type
 use MOM_file_parser,           only : get_param, param_file_type
@@ -84,9 +84,6 @@ subroutine CNN_init(Time,G,param_file,diag,CS)
   ! Register fields for output from this module.
   CS%diag => diag
 
-  !CS%id_dcn = register_SIS_diag_field('ice_model', 'dCN', diag%axesTc, Time, &
-  !     'ML-based correction to ice concentration', 'area fraction', missing_value=missing)
-
   call get_param(param_file, mdl, "CNN_HALO_SIZE", CS%CNN_halo_size, &
       "Halo size at each side of subdomains, depends on CNN architecture.", & 
       units="nondim", default=4)
@@ -110,8 +107,8 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow, Time)
                                                    !! (mostly fluxes) over the fast updates
   type(ocean_sfc_state_type), intent(inout) :: OSS !< A structure containing the arrays that describe
                                                    !! the ocean's surface state for the ice model.
-  type(ice_ocean_flux_type), intent(inout) ::  IOF !< A structure containing the arrays that describe
-                                                   !! the ocean's surface state for the ice model.
+  type(ice_ocean_flux_type), intent(inout)  :: IOF !< A structure containing fluxes from the ice to
+                                                   !! the ocean that are calculated by the ice model.
   type(SIS_hor_grid_type),   intent(in)     :: G      !< The horizontal grid structure
   type(ice_grid_type),       intent(in)     :: IG     !< Sea ice specific grid
   type(python_interface),    intent(in)     :: CS     !< Python interface object
@@ -123,8 +120,6 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow, Time)
   !initialise input variables with wide halos
   real, dimension(SZI_(G),SZJ_(G)) &
                                    ::  HI        !< mean ice thickness [m].
-  !real, dimension(SZI_(G),SZJ_(G)) &
-  !                                 ::  net_sw    !< net shortwave radiation [Wm-2].
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
                                    :: WH_SIC     !< aggregate concentrations [nondim].
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
@@ -135,8 +130,6 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow, Time)
                                    ::  WH_VI     !< meridional ice velocities [ms-1].
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
                                    ::  WH_HI     !< mean ice thickness [m].
-  !real, dimension(SZIW_(CNN),SZJW_(CNN)) &
-  !                                 ::  WH_SW     !< net shortwave radiation [Wm-2].
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
                                    ::  WH_TS     !< ice-surface skin temperature [degrees C].
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
@@ -151,34 +144,31 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow, Time)
   !initialise network outputs
   real, dimension(SZI_(G),SZJ_(G),5) &
                                    :: dCN      !< network B predictions of category SIC corrections
-  !real, dimension(SZI_(G),SZJ_(G),14) &
-  !                                 :: dCN      !< network B predictions of category SIC corrections
   real, dimension(SZI_(G),SZJ_(G),0:5) &
                                     :: posterior  !< updated part_size (bounded between 0 and 1)
   
   real, dimension(5) :: hmid
+  real, dimension(IG%NkIce) :: S_col      ! The salinity of a column of ice [S ~> gSalt kg-1].
   integer :: b, i, j, k, m
-  integer :: is, ie, js, je, ncat, nlay
-  integer :: isdw, iedw, jsdw, jedw, nb
-  integer :: year, month, day, hour, minute, second
-  integer :: sec, yr_days
+  integer :: is, ie, js, je, ncat, nlay, inlay
+  integer :: isdw, iedw, jsdw, jedw
   real    :: cvr, Ti, qi_new, sw_cat, old_ice, cool_nudge
+  real    :: qflx_part, qflx_res_ice, e2m_tot, thickness
   character(85) :: filename
-
+  
   type(EOS_type), pointer :: EOS => NULL()
+  real :: LatHtFus    ! Latent heat of fusion of ice [J m-2]
   real :: Cp_water    ! The heat capacity of sea water [Q C-1 ~> J kg-1 degC-1]
   real :: drho_dT(1)  ! The partial derivative of density with temperature [R C-1 ~> kg m-3 degC-1]
   real :: drho_dS(1)  ! The partial derivative of density with salinity [R S-1 ~> kg m-3 ppt-1]
   real :: pres_0(1)   ! An array of pressures [Pa]
   real, parameter :: rho_ice = 905.0 ! The nominal density of sea ice [R ~> kg m-3]
-  real, parameter :: nudge_sea_ice_rate = 10000.0 ! [W m-2]
   real, parameter :: &    !from ice_therm_vertical.F90
        phi_init = 0.75, & !initial liquid fraction of frazil ice
        Si_new = 5.0       !salinity of mushy ice (ppt)
 
-  is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; ncat = IG%CatIce ; nlay = IG%NkIce
+  is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; ncat = IG%CatIce ; nlay = IG%NkIce ; inlay = 1/nlay
   isdw = CNN%isdw; iedw = CNN%iedw; jsdw = CNN%jsdw; jedw = CNN%jedw
-  nb = size(FIA%flux_sw_top,4)
 
   hmid = 0.0; HI = 0.0
   hmid(1) = 0.05 ; hmid(2) = 0.2 ; hmid(3) = 0.5 ; hmid(4) = 0.9 ; hmid(5) = 1.1
@@ -194,37 +184,17 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow, Time)
      endif
   enddo; enddo
 
-  !net_sw = 0.0
-  !do j=js,je; do i=is,ie
-  !    do k=0,ncat
-  !       sw_cat = 0
-  !       do b=1,nb
-  !          sw_cat = sw_cat + FIA%flux_sw_top(i,j,k,b)
-  !       enddo
-  !       net_sw(i,j) = net_sw(i,j) + IST%part_size(i,j,k) * sw_cat
-  !    enddo
-  !enddo; enddo
-
-  !Network does not generalize to diurnal cycle of net shortwave, so will use a daily climatology instead
-  !year = 0; month = 0; day = 0; hour = 0; minute = 0; second = 0
-  !sec = 0; yr_days = 0; net_sw = 0.0
-  !call get_date(Time, year, month, day, hour, minute, second)
-  !call get_time(Time - set_date(year, 1, 1, 0, 0, 0), sec, yr_days)
-  !write(filename, "(A,I3.3,A)") "/gpfs/f5/gfdl_o/scratch/William.Gregory/CNNForpy/SWclim/1982-2017_netSWclim_day", yr_days + 1, ".nc"
-  !call MOM_read_data(filename=filename, fieldname='SW', data=net_sw, MOM_Domain=G%Domain, timelevel=1, global_file=.true.)
-
   call pass_vector(IST%u_ice_C, IST%v_ice_C, G%Domain, stagger=CGRID_NE)
   
   !populate variables to pad for CNN halos
   WH_SIC = 0.0; WH_SST = 0.0; WH_HI = 0.0; WH_UI = 0.0; WH_VI = 0.0
-  WH_TS = 0.0; WH_SSS = 0.0; WH_mask = 0.0; XB = 0.0!; WH_SW = 0.0
+  WH_TS = 0.0; WH_SSS = 0.0; WH_mask = 0.0; XB = 0.0
   do j=js,je ; do i=is,ie
      WH_SIC(i,j) = 1 - IST%part_size(i,j,0)
      WH_SST(i,j) = OSS%SST_C(i,j)
      WH_UI(i,j) = (IST%u_ice_C(I-1,j) + IST%u_ice_C(I,j))/2
      WH_VI(i,j) = (IST%v_ice_C(i,J-1) + IST%v_ice_C(i,J))/2
      WH_HI(i,j) = HI(i,j)
-     !WH_SW(i,j) = net_sw(i,j)
      WH_TS(i,j) = FIA%Tskin_avg(i,j)
      WH_SSS(i,j) = OSS%s_surf(i,j)
      WH_mask(i,j) = G%mask2dT(i,j)
@@ -239,7 +209,6 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow, Time)
   call pass_var(WH_SST, CNN%CNN_Domain)
   call pass_vector(WH_UI, WH_VI, CNN%CNN_Domain, stagger=CGRID_NE)
   call pass_var(WH_HI, CNN%CNN_Domain)
-  !call pass_var(WH_SW, CNN%CNN_Domain)
   call pass_var(WH_TS, CNN%CNN_Domain)
   call pass_var(WH_SSS, CNN%CNN_Domain)
   call pass_var(WH_mask, CNN%CNN_Domain)
@@ -252,7 +221,6 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow, Time)
      XA(3,i,j) = WH_UI(i,j)
      XA(4,i,j) = WH_VI(i,j)
      XA(5,i,j) = WH_HI(i,j)
-     !XA(6,i,j) = WH_SW(i,j)
      XA(6,i,j) = WH_TS(i,j)
      XA(7,i,j) = WH_SSS(i,j)
      XA(8,i,j) = WH_mask(i,j)
@@ -262,31 +230,6 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow, Time)
   dCN = 0.0
   call forpy_run_python(XA, XB, dCN, CS, dt_slow)
   call pass_var(dCN, G%Domain)
-  
-  !do j=js,je ; do i=is,ie
-  !   do k=1,ncat
-  !      IST%dCN(i,j,k) = dCN(i,j,k)
-  !   enddo
-  !   IST%WG_SIC(i,j) = dCN(i,j,6)
-  !   IST%WG_SST(i,j) = dCN(i,j,7)
-  !   IST%WG_UI(i,j) = dCN(i,j,8)
-  !   IST%WG_VI(i,j) = dCN(i,j,9)
-  !   IST%WG_HI(i,j) = dCN(i,j,10)
-  !   IST%WG_SW(i,j) = dCN(i,j,11)
-  !   IST%WG_TS(i,j) = dCN(i,j,12)
-  !   IST%WG_SSS(i,j) = dCN(i,j,13)
-  !   IST%WG_mask(i,j) = dCN(i,j,14)
-  !enddo; enddo
-
-  !call pass_var(IST%WG_SIC, G%Domain)
-  !call pass_var(IST%WG_SST, G%Domain)
-  !call pass_vector(IST%WG_UI, IST%WG_VI, G%Domain, stagger=CGRID_NE)
-  !call pass_var(IST%WG_HI, G%Domain)
-  !call pass_var(IST%WG_SW, G%Domain)
-  !call pass_var(IST%WG_TS, G%Domain)
-  !call pass_var(IST%WG_SSS, G%Domain)
-  !call pass_var(IST%WG_mask, G%Domain)
-  !call pass_var(IST%dCN, G%Domain)
 
   !Update category concentrations & bound between 0 and 1
   posterior = 0.0
@@ -306,7 +249,7 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow, Time)
         enddo
      endif
      cvr = 0.0
-    do k=1,ncat
+     do k=1,ncat
         cvr = cvr + posterior(i,j,k)
      enddo
      posterior(i,j,0) = 1 - cvr
@@ -315,14 +258,15 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow, Time)
   !update sea ice/ocean variables based on corrected sea ice state
   Ti = min(liquidus_temperature_mush(Si_new/phi_init),-0.1)
   qi_new = enthalpy_ice(Ti, Si_new)
-  if (.not.allocated(IOF%melt_nudge)) allocate(IOF%melt_nudge(is:ie,js:je))
-  IOF%melt_nudge(:,:) = 0.0
-  pres_0(:) = 0.0
-  cool_nudge = 0
-  call get_SIS2_thermo_coefs(IST%ITV, Cp_Water=Cp_water)
+  call get_SIS2_thermo_coefs(IST%ITV, Cp_water=Cp_water, Latent_fusion=LatHtFus, ice_salinity=S_col)
+  !if (.not.allocated(IOF%melt_nudge)) allocate(IOF%melt_nudge(is:ie,js:je))
+  !IOF%melt_nudge(:,:) = 0.
+  !pres_0(:) = 0.0
+  !cool_nudge = 0.0
+  !qflx_res_ice = 0.0
+  !qflx_part = 0.0
   do j=js,je ; do i=is,ie
      cvr = 1 - posterior(i,j,0)
-     old_ice = 1 - IST%part_size(i,j,0)
      do k=1,ncat
         !have added ice to grid cell which was previously ice free
         if (posterior(i,j,k)>0.0 .and. IST%part_size(i,j,k)<=0.0) then
@@ -332,7 +276,7 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow, Time)
            IST%enth_snow(i,j,k,1) = 0.0
            do m=1,nlay
               IST%enth_ice(i,j,k,m) = qi_new/rho_ice
-              IST%sal_ice(i,j,k,m) = Si_new 
+              IST%sal_ice(i,j,k,m) = Si_new
            enddo
         !have removed all sea in a grid cell
         elseif (posterior(i,j,k)<=0.0 .and. IST%part_size(i,j,k)>0.0) then
@@ -345,20 +289,68 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow, Time)
               IST%sal_ice(i,j,k,m) = 0.0
            enddo
         endif
-     enddo
-     if (old_ice < cvr .and. cvr >=0.15 .and. OSS%SST_C(i,j) > OSS%T_fr_ocn(i,j)) then
-        cool_nudge = nudge_sea_ice_rate * (cvr - old_ice)**2.0 ! W/m2
-        call calculate_density_derivs(OSS%SST_C(i:i,j), OSS%s_surf(i:i,j), pres_0, &
-                              drho_dT, drho_dS, 1, 1, EOS)
-        IOF%melt_nudge(i,j) = (-cool_nudge*drho_dT(1)) / &
-                ((Cp_water*drho_dS(1)) * max(OSS%s_surf(i,j), 1.0*US%ppt_to_S) )
-     endif
-  enddo; enddo
-  do j=js,je ; do i=is,ie
-     do k=0,ncat
         IST%part_size(i,j,k) = posterior(i,j,k)
      enddo
+     IST%part_size(i,j,0) = posterior(i,j,0)
+     if (cvr > 0.15 .and. OSS%SST_C(i,j) > OSS%T_fr_ocn(i,j)) then
+        IOF%flux_sh_ocn_top(i,j) = IOF%flux_sh_ocn_top(i,j) + &
+             ((OSS%T_fr_ocn(i,j) - OSS%SST_C(i,j)) * (1035.0*3925.0) * (4*US%m_to_Z*US%T_to_s/86400.0)) !1035 = reference density, 3925 = Cp of water, 4 = piston velocity (m day-1)
+     endif
   enddo; enddo
+
+     !RESTORING ROUTINE
+     !e2m_tot = 0.0
+     !thickness = 0.0
+     !cvr = 1 - posterior(i,j,0)
+     !old_ice = 1 - IST%part_size(i,j,0)
+     !do k=1,ncat
+     !   thickness = thickness + posterior(i,j,k)*((hmid(k)*rho_ice)*(US%Z_to_m/rho_ice))
+     !   e2m_tot = (IST%part_size(i,j,k)*IST%mH_snow(i,j,k)) * &
+     !                  ((enthalpy_liquid_freeze(0.0, IST%ITV) - &
+     !                  IST%enth_snow(i,j,k,1)) )
+     !   do m=1,nlay
+     !      e2m_tot = e2m_tot + (IST%part_size(i,j,k)*IST%mH_ice(i,j,k) * inlay) * &
+     !                  ((enthalpy_liquid_freeze(S_col(m), IST%ITV) - &
+     !                  IST%enth_ice(i,j,k,m)) )
+     !   enddo
+     !   qflx_part = -(LatHtFus*rho_ice*hmid(k)*posterior(i,j,k) - e2m_tot) / dt_slow
+     !   if (qflx_part > 0.0) then
+     !      FIA%bmelt(i,j,k) = FIA%bmelt(i,j,k) + qflx_part
+     !   endif
+     !enddo
+     !if (cvr > 0) then
+     !   thickness = thickness / cvr
+     !else
+     !   thickness = 0.0
+     !endif
+     !qflx_res_ice = -(LatHtFus*rho_ice*thickness*cvr - e2m_tot) / dt_slow
+     !if (qflx_res_ice < 0.0) then
+     !   FIA%frazil_left(i,j) = FIA%frazil_left(i,j) - qflx_res_ice!*dt_slow
+     !endif
+
+     !NUDGE ROUTINE
+     !if (old_ice < cvr) then
+     !   cool_nudge = 10000 * (cvr - old_ice)**2.0 ! W/m2
+     !   PRINT *, "COOL NUDGE FREEZE", cool_nudge
+     !   if (OSS%SST_C(i,j) > OSS%T_fr_ocn(i,j)) then
+     !      call calculate_density_derivs(OSS%SST_C(i:i,j), OSS%s_surf(i:i,j), pres_0, & !THIS CAUSES CRASH
+     !                                          drho_dT, drho_dS, 1, 1, EOS)
+     !      PRINT *, "PRES 0", pres_0(1), "drho_dT", drho_dT(1), "drho_dS", drho_dS(1) 
+     !      IOF%melt_nudge(i,j) = (-cool_nudge*drho_dT(1)) / &
+     !           ((Cp_water*drho_dS(1)) * max(OSS%s_surf(i,j), 1.0*US%ppt_to_S) )
+     !      PRINT *, "MELT NUDGE", IOF%melt_nudge(i,j)
+     !   endif
+     !elseif (old_ice > cvr) then
+     !   ! Heat the ice but do not apply a fresh water flux.
+     !   cool_nudge = -10000 * (old_ice - cvr)**2.0 ! W/m2
+     !   PRINT *, "COOL NUDGE MELT", cool_nudge
+     !endif
+     !if (cool_nudge > 0.0) then
+     !   FIA%frazil_left(i,j) = FIA%frazil_left(i,j) + cool_nudge*dt_slow
+     !elseif (cool_nudge < 0.0) then
+     !   OSS%bheat(i,j) = OSS%bheat(i,j) - cool_nudge
+     !endif
+     
      
 end subroutine CNN_inference
 
