@@ -146,19 +146,11 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow, Time)
                                     :: posterior  !< updated part_size (bounded between 0 and 1)
   
   real, dimension(5) :: hmid
-  real, dimension(IG%NkIce) :: S_col      ! The salinity of a column of ice [S ~> gSalt kg-1].
   integer :: b, i, j, k, m
-  integer :: is, ie, js, je, ncat, nlay, inlay
+  integer :: is, ie, js, je, ncat, nlay
   integer :: isdw, iedw, jsdw, jedw
-  real    :: cvr, Ti, qi_new, old_ice, cool_nudge
-  real    :: qflx_part, qflx_res_ice, e2m_tot, thickness
+  real    :: cvr, Ti, qi_new
   
-  type(EOS_type), pointer :: EOS => NULL()
-  real :: LatHtFus    ! Latent heat of fusion of ice [J m-2]
-  real :: Cp_water    ! The heat capacity of sea water [Q C-1 ~> J kg-1 degC-1]
-  real :: drho_dT(1)  ! The partial derivative of density with temperature [R C-1 ~> kg m-3 degC-1]
-  real :: drho_dS(1)  ! The partial derivative of density with salinity [R S-1 ~> kg m-3 ppt-1]
-  real :: pres_0(1)   ! An array of pressures [Pa]
   real, parameter :: rho_ice = 905.0 ! The nominal density of sea ice [R ~> kg m-3]
   real, parameter :: &    !from ice_therm_vertical.F90
        phi_init = 0.75, & !initial liquid fraction of frazil ice
@@ -194,6 +186,7 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow, Time)
         WH_HI(i,j) = WH_HI(i,j) / cvr
      else
         WH_HI(i,j) = 0.0
+     endif
   enddo ; enddo
   
   ! Update the wide halos
@@ -250,13 +243,7 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow, Time)
   !update sea ice/ocean variables based on corrected sea ice state
   Ti = min(liquidus_temperature_mush(Si_new/phi_init),-0.1)
   qi_new = enthalpy_ice(Ti, Si_new)
-  call get_SIS2_thermo_coefs(IST%ITV, Cp_water=Cp_water, Latent_fusion=LatHtFus, ice_salinity=S_col)
-  !if (.not.allocated(IOF%melt_nudge)) allocate(IOF%melt_nudge(is:ie,js:je))
-  !IOF%melt_nudge(:,:) = 0.
-  !pres_0(:) = 0.0
-  !cool_nudge = 0.0
-  !qflx_res_ice = 0.0
-  !qflx_part = 0.0
+  !call get_SIS2_thermo_coefs(IST%ITV, Cp_water=Cp_water, Latent_fusion=LatHtFus, ice_salinity=S_col)
   do j=js,je ; do i=is,ie
      cvr = 1 - posterior(i,j,0)
      do k=1,ncat
@@ -285,64 +272,10 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow, Time)
      enddo
      IST%part_size(i,j,0) = posterior(i,j,0)
      if (cvr > 0.15 .and. OSS%SST_C(i,j) > OSS%T_fr_ocn(i,j)) then
-        IOF%flux_sh_ocn_top(i,j) = IOF%flux_sh_ocn_top(i,j) + &
+        IOF%flux_sh_ocn_top(i,j) = IOF%flux_sh_ocn_top(i,j) - &
              ((OSS%T_fr_ocn(i,j) - OSS%SST_C(i,j)) * (1035.0*3925.0) * (4*US%m_to_Z*US%T_to_s/86400.0)) !1035 = reference density, 3925 = Cp of water, 4 = piston velocity (m day-1)
      endif
   enddo; enddo
-
-     !RESTORING ROUTINE
-     !e2m_tot = 0.0
-     !thickness = 0.0
-     !cvr = 1 - posterior(i,j,0)
-     !old_ice = 1 - IST%part_size(i,j,0)
-     !do k=1,ncat
-     !   thickness = thickness + posterior(i,j,k)*((hmid(k)*rho_ice)*(US%Z_to_m/rho_ice))
-     !   e2m_tot = (IST%part_size(i,j,k)*IST%mH_snow(i,j,k)) * &
-     !                  ((enthalpy_liquid_freeze(0.0, IST%ITV) - &
-     !                  IST%enth_snow(i,j,k,1)) )
-     !   do m=1,nlay
-     !      e2m_tot = e2m_tot + (IST%part_size(i,j,k)*IST%mH_ice(i,j,k) * inlay) * &
-     !                  ((enthalpy_liquid_freeze(S_col(m), IST%ITV) - &
-     !                  IST%enth_ice(i,j,k,m)) )
-     !   enddo
-     !   qflx_part = -(LatHtFus*rho_ice*hmid(k)*posterior(i,j,k) - e2m_tot) / dt_slow
-     !   if (qflx_part > 0.0) then
-     !      FIA%bmelt(i,j,k) = FIA%bmelt(i,j,k) + qflx_part
-     !   endif
-     !enddo
-     !if (cvr > 0) then
-     !   thickness = thickness / cvr
-     !else
-     !   thickness = 0.0
-     !endif
-     !qflx_res_ice = -(LatHtFus*rho_ice*thickness*cvr - e2m_tot) / dt_slow
-     !if (qflx_res_ice < 0.0) then
-     !   FIA%frazil_left(i,j) = FIA%frazil_left(i,j) - qflx_res_ice!*dt_slow
-     !endif
-
-     !NUDGE ROUTINE
-     !if (old_ice < cvr) then
-     !   cool_nudge = 10000 * (cvr - old_ice)**2.0 ! W/m2
-     !   PRINT *, "COOL NUDGE FREEZE", cool_nudge
-     !   if (OSS%SST_C(i,j) > OSS%T_fr_ocn(i,j)) then
-     !      call calculate_density_derivs(OSS%SST_C(i:i,j), OSS%s_surf(i:i,j), pres_0, & !THIS CAUSES CRASH
-     !                                          drho_dT, drho_dS, 1, 1, EOS)
-     !      PRINT *, "PRES 0", pres_0(1), "drho_dT", drho_dT(1), "drho_dS", drho_dS(1) 
-     !      IOF%melt_nudge(i,j) = (-cool_nudge*drho_dT(1)) / &
-     !           ((Cp_water*drho_dS(1)) * max(OSS%s_surf(i,j), 1.0*US%ppt_to_S) )
-     !      PRINT *, "MELT NUDGE", IOF%melt_nudge(i,j)
-     !   endif
-     !elseif (old_ice > cvr) then
-     !   ! Heat the ice but do not apply a fresh water flux.
-     !   cool_nudge = -10000 * (old_ice - cvr)**2.0 ! W/m2
-     !   PRINT *, "COOL NUDGE MELT", cool_nudge
-     !endif
-     !if (cool_nudge > 0.0) then
-     !   FIA%frazil_left(i,j) = FIA%frazil_left(i,j) + cool_nudge*dt_slow
-     !elseif (cool_nudge < 0.0) then
-     !   OSS%bheat(i,j) = OSS%bheat(i,j) - cool_nudge
-     !endif
-     
      
 end subroutine CNN_inference
 
