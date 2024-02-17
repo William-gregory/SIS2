@@ -271,9 +271,9 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow, Time)
         IST%part_size(i,j,k) = posterior(i,j,k)
      enddo
      IST%part_size(i,j,0) = posterior(i,j,0)
-     if (cvr > 0.15 .and. OSS%SST_C(i,j) > OSS%T_fr_ocn(i,j)) then
+     if (cvr > 0.3 .and. OSS%SST_C(i,j) > OSS%T_fr_ocn(i,j)) then
         IOF%flux_sh_ocn_top(i,j) = IOF%flux_sh_ocn_top(i,j) - &
-             ((OSS%T_fr_ocn(i,j) - OSS%SST_C(i,j)) * (1035.0*3925.0) * (1*US%m_to_Z*US%T_to_s/86400.0)) !1035 = reference density, 3925 = Cp of water, 4 = piston velocity (m day-1)
+             ((OSS%T_fr_ocn(i,j) - OSS%SST_C(i,j)) * (1035.0*3925.0) * (4*US%m_to_Z*US%T_to_s/86400.0)) !1035 = reference density, 3925 = Cp of water, 4 = piston velocity (m day-1)
      endif
   enddo; enddo
      
