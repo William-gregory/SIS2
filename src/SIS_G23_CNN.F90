@@ -146,7 +146,7 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow, Time)
                                     :: posterior  !< updated part_size (bounded between 0 and 1)
   
   real, dimension(5) :: hmid
-  integer :: b, i, j, k, m
+  integer :: i, j, k, m
   integer :: is, ie, js, je, ncat, nlay
   integer :: isdw, iedw, jsdw, jedw
   real    :: cvr, Ti, qi_new
@@ -156,7 +156,7 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow, Time)
        phi_init = 0.75, & !initial liquid fraction of frazil ice
        Si_new = 5.0       !salinity of mushy ice (ppt)
 
-  is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; ncat = IG%CatIce ; nlay = IG%NkIce ; inlay = 1/nlay
+  is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; ncat = IG%CatIce ; nlay = IG%NkIce
   isdw = CNN%isdw; iedw = CNN%iedw; jsdw = CNN%jsdw; jedw = CNN%jedw
 
   hmid = 0.0
@@ -273,7 +273,7 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow, Time)
      IST%part_size(i,j,0) = posterior(i,j,0)
      if (cvr > 0.15 .and. OSS%SST_C(i,j) > OSS%T_fr_ocn(i,j)) then
         IOF%flux_sh_ocn_top(i,j) = IOF%flux_sh_ocn_top(i,j) - &
-             ((OSS%T_fr_ocn(i,j) - OSS%SST_C(i,j)) * (1035.0*3925.0) * (4*US%m_to_Z*US%T_to_s/86400.0)) !1035 = reference density, 3925 = Cp of water, 4 = piston velocity (m day-1)
+             ((OSS%T_fr_ocn(i,j) - OSS%SST_C(i,j)) * (1035.0*3925.0) * (1*US%m_to_Z*US%T_to_s/86400.0)) !1035 = reference density, 3925 = Cp of water, 4 = piston velocity (m day-1)
      endif
   enddo; enddo
      
