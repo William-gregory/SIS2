@@ -1,21 +1,16 @@
 !> Computes a state-dependent bias correction to the part_size variable, based on a convolutional
 !! neural network which has been trained to predict increments from a sea ice data assimilation
-!! system. This correction is non-conservative. See Gregory et al., 2023 for details.
+!! system. This correction is non-conservative. See https://doi.org/10.1029/2023MS003757 for details
 module SIS_G23_CNN
 
 use ice_grid,                  only : ice_grid_type
 use SIS_hor_grid,              only : SIS_hor_grid_type
 use MOM_domains,               only : clone_MOM_domain,MOM_domain_type
 use MOM_domains,               only : pass_var, pass_vector, CGRID_NE
-use MOM_io,                    only : MOM_read_data
-use MOM_EOS,                   only : EOS_type, calculate_density_derivs
-use MOM_time_manager,          only : get_date, get_time, set_date, operator(-)
 use SIS_diag_mediator,         only : register_SIS_diag_field
 use SIS_diag_mediator,         only : post_SIS_data, post_data=>post_SIS_data
 use SIS_diag_mediator,         only : SIS_diag_ctrl
 use SIS_types,                 only : ice_state_type, ocean_sfc_state_type, fast_ice_avg_type, ice_ocean_flux_type
-use SIS_utils,                 only : get_avg
-use SIS2_ice_thm,              only : get_SIS2_thermo_coefs, enthalpy_liquid_freeze
 use MOM_diag_mediator,         only : time_type
 use MOM_unit_scaling,          only : unit_scale_type
 use MOM_file_parser,           only : get_param, param_file_type
@@ -101,7 +96,7 @@ subroutine CNN_init(Time,G,param_file,diag,CS)
 end subroutine CNN_init
 
 !> Manage input and output of CNN model
-subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow, Time)
+subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow)
   type(ice_state_type),      intent(inout)  :: IST !< A type describing the state of the sea ice
   type(fast_ice_avg_type),   intent(inout)  :: FIA !< A type containing averages of fields
                                                    !! (mostly fluxes) over the fast updates
@@ -115,7 +110,6 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow, Time)
   type(unit_scale_type),     intent(in)     :: US  !< A structure with unit conversion factors
   type(CNN_CS),              intent(in)     :: CNN    !< Control structure for CNN
   real,                      intent(in)     :: dt_slow !< The thermodynamic time step [T ~> s]
-  type(time_type),           intent(in)     :: Time       !< The current model time. 
 
   !initialise input variables with wide halos
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
@@ -149,7 +143,7 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow, Time)
   integer :: i, j, k, m
   integer :: is, ie, js, je, ncat, nlay
   integer :: isdw, iedw, jsdw, jedw
-  real    :: cvr, Ti, qi_new
+  real    :: cvr, Ti, qi_new, sic_inc
   
   real, parameter :: rho_ice = 905.0 ! The nominal density of sea ice [R ~> kg m-3]
   real, parameter :: &    !from ice_therm_vertical.F90
@@ -246,6 +240,7 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow, Time)
   !call get_SIS2_thermo_coefs(IST%ITV, Cp_water=Cp_water, Latent_fusion=LatHtFus, ice_salinity=S_col)
   do j=js,je ; do i=is,ie
      cvr = 1 - posterior(i,j,0)
+     sic_inc = 0.0
      do k=1,ncat
         !have added ice to grid cell which was previously ice free
         if (posterior(i,j,k)>0.0 .and. IST%part_size(i,j,k)<=0.0) then
@@ -269,11 +264,12 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow, Time)
            enddo
         endif
         IST%part_size(i,j,k) = posterior(i,j,k)
+        sic_inc = sic_inc + IST%dCN(i,j,k)
      enddo
      IST%part_size(i,j,0) = posterior(i,j,0)
-     if (cvr > 0.3 .and. OSS%SST_C(i,j) > OSS%T_fr_ocn(i,j)) then
+     if (cvr > 0.4 .and. OSS%SST_C(i,j) > OSS%T_fr_ocn(i,j)) then
         IOF%flux_sh_ocn_top(i,j) = IOF%flux_sh_ocn_top(i,j) - &
-             ((OSS%T_fr_ocn(i,j) - OSS%SST_C(i,j)) * (1035.0*3925.0) * (4*US%m_to_Z*US%T_to_s/86400.0)) !1035 = reference density, 3925 = Cp of water, 4 = piston velocity (m day-1)
+             ((OSS%T_fr_ocn(i,j) - OSS%SST_C(i,j)) * (1035.0*3925.0) * (4*US%m_to_Z*US%T_to_s/86400.0)) !1035 = reference density, 3925 = Cp of water, 1 = piston velocity (m day-1)
      endif
   enddo; enddo
      

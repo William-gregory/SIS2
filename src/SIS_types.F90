@@ -72,18 +72,6 @@ type ice_state_type
   real, allocatable, dimension(:,:) :: v_ice_C  !< The pseudo-meridional ice velocity along the
                 !! along the grid directions on a C-grid [L T-1 ~> m s-1].
 
-  !!! WG !!!
-  !real, allocatable, dimension(:,:) :: & 
-  !  WG_SIC, &  
-  !  WG_SST, &
-  !  WG_UI, &
-  !  WG_VI, &
-  !  WG_HI, &
-  !  WG_SW, &
-  !  WG_TS, &
-  !  WG_SSS, &
-  !  WG_mask
-  !!! WG !!!
   real, allocatable, dimension(:,:,:) :: &
     mH_pond, &  !< The mass per unit area of the pond in each category [R Z ~> kg m-2].
     mH_snow, &  !< The mass per unit area of the snow in each category [R Z ~> kg m-2].
@@ -462,15 +450,6 @@ subroutine alloc_IST_arrays(HI, IG, US, IST, omit_velocities, omit_Tsurf, do_rid
   IST%valid_IST = .true.
   allocate(IST%part_size(isd:ied, jsd:jed, 0:CatIce), source=0.0)
   allocate(IST%dCN(isd:ied, jsd:jed, CatIce), source=0.0) !WG
-  !allocate(IST%WG_SIC(isd:ied, jsd:jed), source=0.0) !WG
-  !allocate(IST%WG_SST(isd:ied, jsd:jed), source=0.0) !WG
-  !allocate(IST%WG_UI(isd:ied, jsd:jed), source=0.0) !WG
-  !allocate(IST%WG_VI(isd:ied, jsd:jed), source=0.0) !WG
-  !allocate(IST%WG_HI(isd:ied, jsd:jed), source=0.0) !WG
-  !allocate(IST%WG_SW(isd:ied, jsd:jed), source=0.0) !WG
-  !allocate(IST%WG_TS(isd:ied, jsd:jed), source=0.0) !WG
-  !allocate(IST%WG_SSS(isd:ied, jsd:jed), source=0.0) !WG
-  !allocate(IST%WG_mask(isd:ied, jsd:jed), source=0.0) !WG
   allocate(IST%mH_pond(  isd:ied, jsd:jed, CatIce), source=0.0)
   allocate(IST%mH_snow(  isd:ied, jsd:jed, CatIce), source=0.0)
   allocate(IST%enth_snow(isd:ied, jsd:jed, CatIce, 1), source=0.0)
@@ -2062,15 +2041,6 @@ subroutine dealloc_IST_arrays(IST)
   deallocate(IST%part_size, IST%mH_snow, IST%mH_ice)
   deallocate(IST%mH_pond) ! mw/new
   deallocate(IST%dCN) !WG
-  !deallocate(IST%WG_SIC) !WG
-  !deallocate(IST%WG_SST) !WG
-  !deallocate(IST%WG_UI) !WG
-  !deallocate(IST%WG_VI) !WG
-  !deallocate(IST%WG_HI) !WG
-  !deallocate(IST%WG_SW) !WG
-  !deallocate(IST%WG_TS) !WG
-  !deallocate(IST%WG_SSS) !WG
-  !deallocate(IST%WG_mask) !WG
   
   deallocate(IST%enth_snow, IST%enth_ice, IST%sal_ice)
   if (allocated(IST%snow_to_ocn)) deallocate(IST%snow_to_ocn)
