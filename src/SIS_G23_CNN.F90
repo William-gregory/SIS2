@@ -12,7 +12,6 @@ use SIS_diag_mediator,         only : post_SIS_data, post_data=>post_SIS_data
 use SIS_diag_mediator,         only : SIS_diag_ctrl
 use SIS_types,                 only : ice_state_type, ocean_sfc_state_type, fast_ice_avg_type, ice_ocean_flux_type
 use MOM_diag_mediator,         only : time_type
-use MOM_unit_scaling,          only : unit_scale_type
 use MOM_file_parser,           only : get_param, param_file_type
 use Forpy_interface,           only : forpy_run_python, python_interface
 
@@ -96,7 +95,7 @@ subroutine CNN_init(Time,G,param_file,diag,CS)
 end subroutine CNN_init
 
 !> Manage input and output of CNN model
-subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow)
+subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, CNN, dt_slow)
   type(ice_state_type),      intent(inout)  :: IST !< A type describing the state of the sea ice
   type(fast_ice_avg_type),   intent(inout)  :: FIA !< A type containing averages of fields
                                                    !! (mostly fluxes) over the fast updates
@@ -107,7 +106,6 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow)
   type(SIS_hor_grid_type),   intent(in)     :: G      !< The horizontal grid structure
   type(ice_grid_type),       intent(in)     :: IG     !< Sea ice specific grid
   type(python_interface),    intent(in)     :: CS     !< Python interface object
-  type(unit_scale_type),     intent(in)     :: US  !< A structure with unit conversion factors
   type(CNN_CS),              intent(in)     :: CNN    !< Control structure for CNN
   real,                      intent(in)     :: dt_slow !< The thermodynamic time step [T ~> s]
 
@@ -173,7 +171,7 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow)
      WH_mask(i,j) = G%mask2dT(i,j)
      do k=1,ncat
         XB(k,i,j) = IST%part_size(i,j,k)
-        WH_HI(i,j) = WH_HI(i,j) + IST%part_size(i,j,k)*(IST%mH_ice(i,j,k)*(US%Z_to_m/rho_ice))
+        WH_HI(i,j) = WH_HI(i,j) + IST%part_size(i,j,k)*(IST%mH_ice(i,j,k)/rho_ice)
      enddo
      XB(6,i,j) = G%mask2dT(i,j)
      if (cvr > 0.) then
@@ -267,10 +265,10 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow)
         sic_inc = sic_inc + IST%dCN(i,j,k)
      enddo
      IST%part_size(i,j,0) = posterior(i,j,0)
-     if (cvr > 0.4 .and. OSS%SST_C(i,j) > OSS%T_fr_ocn(i,j)) then
-        IOF%flux_sh_ocn_top(i,j) = IOF%flux_sh_ocn_top(i,j) - &
-             ((OSS%T_fr_ocn(i,j) - OSS%SST_C(i,j)) * (1035.0*3925.0) * (4*US%m_to_Z*US%T_to_s/86400.0)) !1035 = reference density, 3925 = Cp of water, 1 = piston velocity (m day-1)
-     endif
+     !if (cvr > 0.4 .and. OSS%SST_C(i,j) > OSS%T_fr_ocn(i,j)) then
+     !   IOF%flux_sh_ocn_top(i,j) = IOF%flux_sh_ocn_top(i,j) - &
+     !        ((OSS%T_fr_ocn(i,j) - OSS%SST_C(i,j)) * (1035.0*3925.0) * (4*US%m_to_Z*US%T_to_s/86400.0)) !1035 = reference density, 3925 = Cp of water, 1 = piston velocity (m day-1)
+     !endif
   enddo; enddo
      
 end subroutine CNN_inference

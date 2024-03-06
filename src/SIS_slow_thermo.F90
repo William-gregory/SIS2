@@ -34,6 +34,7 @@ use MOM_error_handler, only : callTree_enter, callTree_leave, callTree_waypoint
 use MOM_file_parser, only : get_param, log_param, log_version, param_file_type
 use MOM_hor_index, only : hor_index_type
 use MOM_EOS, only : EOS_type, calculate_density_derivs
+use MOM_string_functions, only : slasher
 
 use coupler_types_mod, only : coupler_type_spawn, coupler_type_initialized
 use coupler_types_mod, only : coupler_type_increment_data, coupler_type_rescale_data
@@ -470,7 +471,7 @@ subroutine slow_thermodynamics(IST, dt_slow, CS, OSS, FIA, XSF, IOF, G, IG)
   !  Other routines that do thermodynamic vertical processes should be added here
   !!! WG !!!
   if (CS%use_G23_CNN) &       
-       call CNN_inference(IST, OSS, FIA, IOF,  G, IG, CS%python, US, CS%CNN, dt_slow)
+       call CNN_inference(IST, OSS, FIA, IOF, G, IG, CS%python, CS%CNN, dt_slow)
   !!! WG end !!!
 
   ! Do tracer column physics
