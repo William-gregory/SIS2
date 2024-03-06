@@ -69,6 +69,9 @@ use SIS_transport, only : adjust_ice_categories, SIS_transport_CS
 use SIS_tracer_flow_control, only : SIS_tracer_flow_control_CS
 use SIS_tracer_registry, only : SIS_unpack_passive_ice_tr, SIS_repack_passive_ice_tr
 use SIS_tracer_registry, only : SIS_count_passive_tracers
+use Forpy_interface,   only : python_interface !WG
+use Forpy_interface,   only : forpy_run_python_init,forpy_run_python_finalize !WG
+use SIS_G23_CNN,       only : CNN_CS,CNN_init,CNN_inference !WG
 
 implicit none ; private
 
@@ -140,6 +143,16 @@ type slow_thermo_CS ; private
   type(SIS_tracer_flow_control_CS), pointer :: tracer_flow_CSp => NULL()
                             !< A pointers to the control structures for a subsidiary module
 
+  !!! WG !!!
+  type(python_interface) :: python !< Python interface object
+  type(CNN_CS)           :: CNN    !< Control structure for CNN
+  logical :: use_G23_CNN   !< If true, use a python script to update part_size
+
+  character(len=200) :: & 
+    python_dir, & !< default = ".". The directory in which python scripts are found.
+    python_file   !< default = "pymodule" - this is the python script that calls pyTorch
+  !!! WG end !!!
+  
   !>@{ Diagnostic IDs
   integer :: id_qflim=-1, id_qfres=-1, id_fwnudge=-1, id_net_melt=-1, id_CMOR_melt=-1
   integer :: id_lsrc=-1, id_lsnk=-1, id_bsnk=-1, id_sn2ic=-1
@@ -455,6 +468,10 @@ subroutine slow_thermodynamics(IST, dt_slow, CS, OSS, FIA, XSF, IOF, G, IG)
   endif
 
   !  Other routines that do thermodynamic vertical processes should be added here
+  !!! WG !!!
+  if (CS%use_G23_CNN) &       
+       call CNN_inference(IST, OSS, FIA, IOF,  G, IG, CS%python, US, CS%CNN, dt_slow)
+  !!! WG end !!!
 
   ! Do tracer column physics
   call enable_SIS_averaging(dt_slow, CS%Time, CS%diag)
@@ -1494,6 +1511,20 @@ subroutine SIS_slow_thermo_init(Time, G, IG, param_file, diag, CS, tracer_flow_C
                'nudging freshwater flux', 'kg/(m^2*s)', missing_value=missing)
   endif
 
+  !!! WG !!!
+  call get_param(param_file, mdl, "USE_G23_CNN", CS%use_G23_CNN, &
+  "Invoke a python script to update part_size.", default=.false.)
+  call get_param(param_file, mdl, "PYTHON_DIR", CS%python_dir, &
+  "The directory in which Python scripts are found.", default=".")
+  CS%python_dir = slasher(CS%python_dir)
+  call get_param(param_file, mdl, "PYTHON_FILE", CS%python_file, &
+  "The name of the Python script for which calls pyTorch.", default="pymodule")
+  CS%python_file = trim(CS%python_file)
+  if (CS%use_G23_CNN) call forpy_run_python_init(CS%python, &
+                              trim(CS%python_dir),trim(CS%python_file))
+  if (CS%use_G23_CNN) call CNN_init(Time, G, param_file, diag, CS%CNN)
+  !!! WG END !!!
+
   call SIS2_ice_thm_init(param_file, CS%ice_thm_CSp)
 
   iceClock7 = mpp_clock_id( '  Ice: slow: conservation check', flags=clock_flag_default, grain=CLOCK_LOOP )
@@ -1529,6 +1560,7 @@ subroutine SIS_slow_thermo_end (CS)
 
   call SIS2_ice_thm_end(CS%ice_thm_CSp)
 
+  if (CS%use_G23_CNN) call forpy_run_python_finalize(CS%python) !WG
   if (associated(CS)) deallocate(CS)
 
 end subroutine SIS_slow_thermo_end
