@@ -53,6 +53,9 @@ type, public :: CNN_CS ; private
   integer :: jsdw !< The lower j-memory limit for the wide halo arrays.
   integer :: jedw !< The upper j-memory limit for the wide halo arrays.
   integer :: CNN_halo_size  !< Halo size at each side of subdomains
+  logical :: do_SSTadj !< apply a heat flux under sea ice
+  real    :: SIC_thresh !< threshold of SIC for SST adjustment
+  real    :: piston_SSTadj !< piston velocity of SST restoring
 
   type(SIS_diag_ctrl), pointer :: diag => NULL() !< A type that regulates diagnostics output
   !>@{ Diagnostic handles
@@ -82,6 +85,18 @@ subroutine CNN_init(Time,G,param_file,diag,CS)
       "Halo size at each side of subdomains, depends on CNN architecture.", & 
       units="nondim", default=4)
 
+  call get_param(param_file, mdl, "DO_SSTADJ", CS%do_SSTadj, &
+      "Whether to apply heat flux under sea ice for sea ice added by CNN", & 
+      default=.false.)
+
+  call get_param(param_file, mdl, "SIC_THRESH", CS%SIC_thresh, &
+      "Threshold of ice cover, above which do_SSTadj is applied", & 
+      units="nondim", default=0.4)
+
+  call get_param(param_file, mdl, "PISTON_SSTADJ", CS%piston_SSTadj, &
+      "Piston velocity with which to restore SST after CNN correction", &
+      units="m day-1", default=4.0)
+  
   wd_halos(1) = CS%CNN_halo_size
   wd_halos(2) = CS%CNN_halo_size
   if (G%symmetric) then
@@ -265,10 +280,12 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, CNN, dt_slow)
         sic_inc = sic_inc + IST%dCN(i,j,k)
      enddo
      IST%part_size(i,j,0) = posterior(i,j,0)
-     !if (cvr > 0.4 .and. OSS%SST_C(i,j) > OSS%T_fr_ocn(i,j)) then
-     !   IOF%flux_sh_ocn_top(i,j) = IOF%flux_sh_ocn_top(i,j) - &
-     !        ((OSS%T_fr_ocn(i,j) - OSS%SST_C(i,j)) * (1035.0*3925.0) * (4*US%m_to_Z*US%T_to_s/86400.0)) !1035 = reference density, 3925 = Cp of water, 1 = piston velocity (m day-1)
-     !endif
+     if (CNN%do_SSTadj) then
+        if (cvr > CNN%SIC_thresh .and. sic_inc > 0.0 .and. OSS%SST_C(i,j) > OSS%T_fr_ocn(i,j)) then
+           IOF%flux_sh_ocn_top(i,j) = IOF%flux_sh_ocn_top(i,j) - &
+                ((OSS%T_fr_ocn(i,j) - OSS%SST_C(i,j)) * (1035.0*3925.0) * (CNN%piston_SSTadj/86400.0)) !1035 = reference density, 3925 = Cp of water
+        endif
+     endif
   enddo; enddo
      
 end subroutine CNN_inference
