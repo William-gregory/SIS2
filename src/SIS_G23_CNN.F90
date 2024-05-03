@@ -144,8 +144,6 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow)
 
   !initialise input variables with wide halos
 
-  real, dimension(SZI_(G),SZJ_(G)) &
-                                   ::  net_sw    !< net shortwave [Wm-2].
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
                                    ::  WH_SIC    !< aggregate concentrations [nondim].
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
@@ -157,14 +155,12 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow)
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
                                    ::  WH_HI     !< mean ice thickness [m].
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
-                                   ::  WH_SW     !< net shortwave [Wm-2].
-  real, dimension(SZIW_(CNN),SZJW_(CNN)) &
                                    ::  WH_TS     !< ice-surface skin temperature [degrees C].
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
                                    ::  WH_SSS    !< sea-surface salinity [ppt].
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
                                    ::  WH_mask   !< land-sea mask (0=land cells, 1=ocean cells)
-  real, dimension(9,SZIW_(CNN),SZJW_(CNN)) &
+  real, dimension(8,SZIW_(CNN),SZJW_(CNN)) &
                                    ::  XA        !< input variables to network A (predict dsiconc)
   real, dimension(6,SZI_(G),SZJ_(G)) &
                                    ::  XB        !< input variables to network B (predict dCN)
@@ -176,10 +172,10 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow)
                                     :: posterior  !< updated part_size (bounded between 0 and 1)
   
   real, dimension(5) :: hmid
-  integer :: i, j, k, m, b
-  integer :: is, ie, js, je, ncat, nlay, nb
+  integer :: i, j, k, m
+  integer :: is, ie, js, je, ncat, nlay
   integer :: isdw, iedw, jsdw, jedw
-  real    :: cvr, Ti, qi_new, sic_inc, sw_cat
+  real    :: cvr, Ti, qi_new, sic_inc
   
   real, parameter :: rho_ice = 905.0 ! The nominal density of sea ice [R ~> kg m-3]
   real, parameter :: &    !from ice_therm_vertical.F90
@@ -188,21 +184,9 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow)
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; ncat = IG%CatIce ; nlay = IG%NkIce
   isdw = CNN%isdw; iedw = CNN%iedw; jsdw = CNN%jsdw; jedw = CNN%jedw
-  nb = size(FIA%flux_sw_top,4)
 
   hmid = 0.0
   hmid(1) = 0.05 ; hmid(2) = 0.2 ; hmid(3) = 0.5 ; hmid(4) = 0.9 ; hmid(5) = 1.1
-
-  net_sw = 0.0
-  do j=js,je ; do i=is,ie !compute net shortwave
-     do k=0,ncat 
-        sw_cat = 0
-        do b=1,nb
-           sw_cat = sw_cat + FIA%flux_sw_top(i,j,k,b)
-        enddo
-        net_sw(i,j) = net_sw(i,j) + IST%part_size(i,j,k) * sw_cat
-     enddo
-  enddo ; enddo
 
   call pass_vector(IST%u_ice_C, IST%v_ice_C, G%Domain, stagger=CGRID_NE)
   
@@ -216,7 +200,6 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow)
      WH_SST(i,j) = OSS%SST_C(i,j)
      WH_UI(i,j) = (IST%u_ice_C(I-1,j) + IST%u_ice_C(I,j))/2
      WH_VI(i,j) = (IST%v_ice_C(i,J-1) + IST%v_ice_C(i,J))/2
-     WH_SW(i,j) = net_sw(i,j)
      WH_TS(i,j) = FIA%Tskin_avg(i,j)
      WH_SSS(i,j) = OSS%s_surf(i,j)
      WH_mask(i,j) = G%mask2dT(i,j)
@@ -237,7 +220,6 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow)
   call pass_var(WH_SST, CNN%CNN_Domain)
   call pass_vector(WH_UI, WH_VI, CNN%CNN_Domain, stagger=CGRID_NE)
   call pass_var(WH_HI, CNN%CNN_Domain)
-  call pass_var(WH_SW, CNN%CNN_Domain)
   call pass_var(WH_TS, CNN%CNN_Domain)
   call pass_var(WH_SSS, CNN%CNN_Domain)
   call pass_var(WH_mask, CNN%CNN_Domain)
@@ -250,10 +232,9 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow)
      XA(3,i,j) = WH_UI(i,j)
      XA(4,i,j) = WH_VI(i,j)
      XA(5,i,j) = WH_HI(i,j)
-     XA(6,i,j) = WH_SW(i,j)
-     XA(7,i,j) = WH_TS(i,j)
-     XA(8,i,j) = WH_SSS(i,j)
-     XA(9,i,j) = WH_mask(i,j)
+     XA(6,i,j) = WH_TS(i,j)
+     XA(7,i,j) = WH_SSS(i,j)
+     XA(8,i,j) = WH_mask(i,j)
   enddo ; enddo
 
   ! Run Python script for CNN inference
