@@ -38,12 +38,16 @@ subroutine forpy_run_python_init(CS,python_dir,python_file)
 end subroutine forpy_run_python_init
 
 !> !> Send variables to a python script and output the results
-subroutine forpy_run_python(in1, in2, out1, CS, dt_slow)
+subroutine forpy_run_python(in1, in2, in3, in4, in5, in6, out1, CS, dt_slow)
     type(python_interface),        intent(in)  :: CS     !< Python interface object
     real, dimension(:,:,:), &
          intent(in) :: in1     ! input variables (Network A).
     real, dimension(:,:,:), &
          intent(in) :: in2     ! input variables (Network B).
+    character(len=*), intent(in) :: in3
+    character(len=*), intent(in) :: in4
+    character(len=*), intent(in) :: in5
+    character(len=*), intent(in) :: in6
     real, dimension(:,:,:), &
          intent(inout) :: out1      ! output variables.
     real, intent(in)   :: dt_slow !< The thermodynamic time step [T ~> s]
@@ -64,11 +68,15 @@ subroutine forpy_run_python(in1, in2, out1, CS, dt_slow)
     if (ierror/=0) then; call err_print; endif
 
     ! Create Python Argument 
-    ierror = tuple_create(args,3)
+    ierror = tuple_create(args,7)
     if (ierror/=0) then; call err_print; endif
     ierror = args%setitem(0,in1_py)
     ierror = args%setitem(1,in2_py)
-    ierror = args%setitem(2,dt_slow)
+    ierror = args%setitem(2,in3)
+    ierror = args%setitem(3,in4)
+    ierror = args%setitem(4,in5)
+    ierror = args%setitem(5,in6)
+    ierror = args%setitem(6,dt_slow)
 
     if (ierror/=0) then; call err_print; endif
     

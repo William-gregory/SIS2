@@ -56,6 +56,11 @@ type, public :: CNN_CS ; private
   integer :: CNN_halo_size  !< Halo size at each side of subdomains
   logical :: do_SSTadj !< apply a heat flux under sea ice
   real    :: piston_SSTadj !< piston velocity of SST restoring
+  character(len=300)  :: netA_weights
+  character(len=300)  :: netB_weights
+  character(len=300)  :: netA_stats
+  character(len=300)  :: netB_stats
+  
 
   type(SIS_diag_ctrl), pointer :: diag => NULL() !< A type that regulates diagnostics output
   !>@{ Diagnostic handles
@@ -92,6 +97,22 @@ subroutine CNN_init(Time,G,param_file,diag,CS)
   call get_param(param_file, mdl, "PISTON_SSTADJ", CS%piston_SSTadj, &
       "Piston velocity with which to restore SST after CNN correction", &
       units="m day-1", default=4.0)
+
+  call get_param(param_file, mdl, "NETA_WEIGHTS", CS%netA_weights, &
+      "Optimized weights for Network A", &
+      default="/gpfs/f5/scratch/gfdl_o/William.Gregory/CNNForpy/NetworkA_weights_G23_notend_noSW.pt")
+
+  call get_param(param_file, mdl, "NETB_WEIGHTS", CS%netB_weights, &
+      "Optimized weights for Network B", &
+      default="/gpfs/f5/scratch/gfdl_o/William.Gregory/CNNForpy/NetworkA_weights_G23_notend_noSW.pt")
+
+  call get_param(param_file, mdl, "NETA_STATS", CS%netA_stats, &
+      "Normalization statistics for Network A", &
+      default="/gpfs/f5/scratch/gfdl_o/William.Gregory/CNNForpy/NetworkA_statistics_notend_noSW_1982-2017_allsamples.npz")
+
+  call get_param(param_file, mdl, "NETB_STATS", CS%netB_stats, &
+      "Normalization statistics for Network B", &
+      default="/gpfs/f5/scratch/gfdl_o/William.Gregory/CNNForpy/NetworkB_statistics_notend_noSW_1982-2017_allsamples.npz")
 
   wd_halos(1) = CS%CNN_halo_size
   wd_halos(2) = CS%CNN_halo_size
@@ -217,7 +238,7 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow)
 
   ! Run Python script for CNN inference
   dCN = 0.0
-  call forpy_run_python(XA, XB, dCN, CS, dt_slow)
+  call forpy_run_python(XA, XB, CNN%netA_weights, CNN%netB_weights, CNN%netA_stats, CNN%netB_stats, dCN, CS, dt_slow)
   call pass_var(dCN, G%Domain)
 
   !Update category concentrations & bound between 0 and 1
