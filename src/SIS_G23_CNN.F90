@@ -7,6 +7,8 @@ use ice_grid,                  only : ice_grid_type
 use SIS_hor_grid,              only : SIS_hor_grid_type
 use MOM_domains,               only : clone_MOM_domain,MOM_domain_type
 use MOM_domains,               only : pass_var, pass_vector, CGRID_NE
+use MOM_io,                    only : MOM_read_data
+use MOM_time_manager,          only : get_date, get_time, set_date, operator(-)
 use SIS_diag_mediator,         only : register_SIS_diag_field
 use SIS_diag_mediator,         only : post_SIS_data, post_data=>post_SIS_data
 use SIS_diag_mediator,         only : SIS_diag_ctrl
@@ -127,7 +129,7 @@ subroutine CNN_init(Time,G,param_file,diag,CS)
 end subroutine CNN_init
 
 !> Manage input and output of CNN model
-subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow)
+subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow, Time)
   type(ice_state_type),      intent(inout)  :: IST !< A type describing the state of the sea ice
   type(fast_ice_avg_type),   intent(inout)  :: FIA !< A type containing averages of fields
                                                    !! (mostly fluxes) over the fast updates
@@ -141,8 +143,11 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow)
   type(unit_scale_type),     intent(in)     :: US  !< A structure with unit conversion factors
   type(CNN_CS),              intent(in)     :: CNN    !< Control structure for CNN
   real,                      intent(in)     :: dt_slow !< The thermodynamic time step [T ~> s]
+  type(time_type),           intent(in)     :: Time       !< The current model time.
 
   !initialise input variables with wide halos
+  real, dimension(SZI_(G),SZJ_(G),1) &
+                                   ::  net_sw    !< net shortwave radiation [Wm-2].
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
                                    ::  WH_SIC    !< aggregate concentrations [nondim].
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
@@ -154,12 +159,14 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow)
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
                                    ::  WH_HI     !< mean ice thickness [m].
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
+                                   ::  WH_SW     !< net shortwave [Wm-2].
+  real, dimension(SZIW_(CNN),SZJW_(CNN)) &
                                    ::  WH_TS     !< ice-surface skin temperature [degrees C].
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
                                    ::  WH_SSS    !< sea-surface salinity [ppt].
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
                                    ::  WH_mask   !< land-sea mask (0=land cells, 1=ocean cells)
-  real, dimension(8,SZIW_(CNN),SZJW_(CNN)) &
+  real, dimension(9,SZIW_(CNN),SZJW_(CNN)) &
                                    ::  XA        !< input variables to network A (predict dsiconc)
   real, dimension(6,SZI_(G),SZJ_(G)) &
                                    ::  XB        !< input variables to network B (predict dCN)
@@ -175,6 +182,9 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow)
   integer :: is, ie, js, je, ncat, nlay
   integer :: isdw, iedw, jsdw, jedw
   real    :: cvr, Ti, qi_new, sic_inc
+  integer :: year, month, day, hour, minute, second
+  integer :: sec, yr_days
+  character(len=300) :: filename
   
   real, parameter :: rho_ice = 905.0 ! The nominal density of sea ice [R ~> kg m-3]
   real, parameter :: &    !from ice_therm_vertical.F90
@@ -187,11 +197,19 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow)
   hmid = 0.0
   hmid(1) = 0.05 ; hmid(2) = 0.2 ; hmid(3) = 0.5 ; hmid(4) = 0.9 ; hmid(5) = 1.1
 
+  !Network does not generalize to diurnal cycle of net shortwave, so will use a daily climatology instead
+  year = 0; month = 0; day = 0; hour = 0; minute = 0; second = 0
+  sec = 0; yr_days = 0; net_sw = 0.0
+  call get_date(Time, year, month, day, hour, minute, second)
+  call get_time(Time - set_date(year, 1, 1, 0, 0, 0), sec, yr_days)
+  write(filename, "(A,I3.3,A)") "/gpfs/f5/gfdl_o/scratch/William.Gregory/CNNForpy/SWclim/1982-2017_netSWclim_day", yr_days + 1, ".nc"
+  call MOM_read_data(filename=filename, fieldname='SW', data=net_sw, MOM_Domain=G%Domain, timelevel=1, global_file=.true.)
+
   call pass_vector(IST%u_ice_C, IST%v_ice_C, G%Domain, stagger=CGRID_NE)
   
   !populate variables to pad for CNN halos
   WH_SIC = 0.0; WH_SST = 0.0; WH_HI = 0.0; WH_UI = 0.0; WH_VI = 0.0
-  WH_TS = 0.0; WH_SSS = 0.0; WH_mask = 0.0; XB = 0.0
+  WH_TS = 0.0; WH_SSS = 0.0; WH_mask = 0.0; XB = 0.0; WH_SW = 0.0
   cvr = 0.0
   do j=js,je ; do i=is,ie
      cvr = 1 - IST%part_size(i,j,0)
@@ -199,6 +217,7 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow)
      WH_SST(i,j) = OSS%SST_C(i,j)
      WH_UI(i,j) = (IST%u_ice_C(I-1,j) + IST%u_ice_C(I,j))/2
      WH_VI(i,j) = (IST%v_ice_C(i,J-1) + IST%v_ice_C(i,J))/2
+     WH_SW(i,j) = net_sw(i,j,1)
      WH_TS(i,j) = FIA%Tskin_avg(i,j)
      WH_SSS(i,j) = OSS%s_surf(i,j)
      WH_mask(i,j) = G%mask2dT(i,j)
@@ -219,6 +238,7 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow)
   call pass_var(WH_SST, CNN%CNN_Domain)
   call pass_vector(WH_UI, WH_VI, CNN%CNN_Domain, stagger=CGRID_NE)
   call pass_var(WH_HI, CNN%CNN_Domain)
+  call pass_var(WH_SW, CNN%CNN_Domain)
   call pass_var(WH_TS, CNN%CNN_Domain)
   call pass_var(WH_SSS, CNN%CNN_Domain)
   call pass_var(WH_mask, CNN%CNN_Domain)
@@ -231,9 +251,10 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, US, CNN, dt_slow)
      XA(3,i,j) = WH_UI(i,j)
      XA(4,i,j) = WH_VI(i,j)
      XA(5,i,j) = WH_HI(i,j)
-     XA(6,i,j) = WH_TS(i,j)
-     XA(7,i,j) = WH_SSS(i,j)
-     XA(8,i,j) = WH_mask(i,j)
+     XA(6,i,j) = WH_SW(i,j)
+     XA(7,i,j) = WH_TS(i,j)
+     XA(8,i,j) = WH_SSS(i,j)
+     XA(9,i,j) = WH_mask(i,j)
   enddo ; enddo
 
   ! Run Python script for CNN inference
