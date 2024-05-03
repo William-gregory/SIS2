@@ -457,7 +457,7 @@ subroutine slow_thermodynamics(IST, dt_slow, CS, OSS, FIA, XSF, IOF, G, US, IG)
   !  Other routines that do thermodynamic vertical processes should be added here
   !!! WG !!!
   if (CS%use_G23_CNN) &       
-       call CNN_inference(IST, OSS, FIA, IOF,  G, IG, CS%python, US, CS%CNN, dt_slow, CS%Time)
+       call CNN_inference(IST, OSS, FIA, IOF,  G, IG, CS%python, US, CS%CNN, dt_slow)
   !!! WG end !!!
 
   ! Do tracer column physics
