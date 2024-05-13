@@ -294,10 +294,11 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, CNN, dt_slow)
         sic_inc = sic_inc + IST%dCN(i,j,k)
      enddo
      IST%part_size(i,j,0) = posterior(i,j,0)
-     if (CNN%do_SSTadj) then
+     if (CNN%do_SSTadj) then !apply heat flux from ocean to ice to retain newly formed sea ice
         if (sic_inc > 0 .and. OSS%SST_C(i,j) > OSS%T_fr_ocn(i,j)) then
            IOF%flux_sh_ocn_top(i,j) = IOF%flux_sh_ocn_top(i,j) - &
                 ((OSS%T_fr_ocn(i,j) - OSS%SST_C(i,j)) * (1035.0*3925.0) * (CNN%piston_SSTadj/86400.0)) !1035 = reference density, 3925 = Cp of water
+           !IOF%melt_nudge(i,j) - this applies a fresh water flux from ice to ocean to adjust SSS
         endif
      endif
   enddo; enddo
