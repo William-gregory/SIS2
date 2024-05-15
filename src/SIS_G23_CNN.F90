@@ -145,8 +145,10 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, CNN, dt_slow)
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
                                    ::  WH_SST    !< sea-surface temperature [degrees C].
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
+                                   ::  WH_SSS    !< sea-surface salinity [psu].
+  real, dimension(SZIW_(CNN),SZJW_(CNN)) &
                                    ::  WH_mask   !< land-sea mask (0=land cells, 1=ocean cells)
-  real, dimension(3,SZIW_(CNN),SZJW_(CNN)) &
+  real, dimension(4,SZIW_(CNN),SZJW_(CNN)) &
                                    ::  XA        !< input variables to network A (predict dsiconc)
   real, dimension(6,SZI_(G),SZJ_(G)) &
                                    ::  XB        !< input variables to network B (predict dCN)
@@ -175,12 +177,13 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, CNN, dt_slow)
   hmid(1) = 0.05 ; hmid(2) = 0.2 ; hmid(3) = 0.5 ; hmid(4) = 0.9 ; hmid(5) = 1.1
   
   !populate variables to pad for CNN halos
-  WH_SIC = 0.0 ; WH_SST = 0.0 ; WH_mask = 0.0 ; XB = 0.0
+  WH_SIC = 0.0 ; WH_SST = 0.0 ; WH_SSS = 0.0 ; WH_mask = 0.0 ; XB = 0.0
   cvr = 0.0
   do j=js,je ; do i=is,ie
      cvr = 1 - IST%part_size(i,j,0)
      WH_SIC(i,j) = cvr
      WH_SST(i,j) = OSS%SST_C(i,j)
+     WH_SSS(i,j) = OSS%s_surf(i,j)
      WH_mask(i,j) = G%mask2dT(i,j)
      do k=1,ncat
         XB(k,i,j) = IST%part_size(i,j,k)
@@ -191,6 +194,7 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, CNN, dt_slow)
   ! Update the wide halos
   call pass_var(WH_SIC, CNN%CNN_Domain)
   call pass_var(WH_SST, CNN%CNN_Domain)
+  call pass_var(WH_SSS, CNN%CNN_Domain)
   call pass_var(WH_mask, CNN%CNN_Domain)
 
   ! Combine arrays for CNN input
@@ -198,7 +202,8 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, CNN, dt_slow)
   do j=jsdw,jedw ; do i=isdw,iedw 
      XA(1,i,j) = WH_SIC(i,j)
      XA(2,i,j) = WH_SST(i,j)
-     XA(3,i,j) = WH_mask(i,j)
+     XA(3,i,j) = WH_SSS(i,j)
+     XA(4,i,j) = WH_mask(i,j)
   enddo ; enddo
 
   ! Run Python script for CNN inference
