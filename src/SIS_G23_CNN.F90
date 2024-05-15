@@ -145,18 +145,8 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, CNN, dt_slow)
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
                                    ::  WH_SST    !< sea-surface temperature [degrees C].
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
-                                   ::  WH_UI     !< zonal ice velocities [ms-1].
-  real, dimension(SZIW_(CNN),SZJW_(CNN)) &
-                                   ::  WH_VI     !< meridional ice velocities [ms-1].
-  real, dimension(SZIW_(CNN),SZJW_(CNN)) &
-                                   ::  WH_HI     !< mean ice thickness [m].
-  real, dimension(SZIW_(CNN),SZJW_(CNN)) &
-                                   ::  WH_TS     !< ice-surface skin temperature [degrees C].
-  real, dimension(SZIW_(CNN),SZJW_(CNN)) &
-                                   ::  WH_SSS    !< sea-surface salinity [ppt].
-  real, dimension(SZIW_(CNN),SZJW_(CNN)) &
                                    ::  WH_mask   !< land-sea mask (0=land cells, 1=ocean cells)
-  real, dimension(8,SZIW_(CNN),SZJW_(CNN)) &
+  real, dimension(3,SZIW_(CNN),SZJW_(CNN)) &
                                    ::  XA        !< input variables to network A (predict dsiconc)
   real, dimension(6,SZI_(G),SZJ_(G)) &
                                    ::  XB        !< input variables to network B (predict dCN)
@@ -183,41 +173,24 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, CNN, dt_slow)
 
   hmid = 0.0
   hmid(1) = 0.05 ; hmid(2) = 0.2 ; hmid(3) = 0.5 ; hmid(4) = 0.9 ; hmid(5) = 1.1
-
-  call pass_vector(IST%u_ice_C, IST%v_ice_C, G%Domain, stagger=CGRID_NE)
   
   !populate variables to pad for CNN halos
-  WH_SIC = 0.0; WH_SST = 0.0; WH_HI = 0.0; WH_UI = 0.0; WH_VI = 0.0
-  WH_TS = 0.0; WH_SSS = 0.0; WH_mask = 0.0; XB = 0.0
+  WH_SIC = 0.0 ; WH_SST = 0.0 ; WH_mask = 0.0 ; XB = 0.0
   cvr = 0.0
   do j=js,je ; do i=is,ie
      cvr = 1 - IST%part_size(i,j,0)
      WH_SIC(i,j) = cvr
      WH_SST(i,j) = OSS%SST_C(i,j)
-     WH_UI(i,j) = (IST%u_ice_C(I-1,j) + IST%u_ice_C(I,j))/2
-     WH_VI(i,j) = (IST%v_ice_C(i,J-1) + IST%v_ice_C(i,J))/2
-     WH_TS(i,j) = FIA%Tskin_avg(i,j)
-     WH_SSS(i,j) = OSS%s_surf(i,j)
      WH_mask(i,j) = G%mask2dT(i,j)
      do k=1,ncat
         XB(k,i,j) = IST%part_size(i,j,k)
-        WH_HI(i,j) = WH_HI(i,j) + IST%part_size(i,j,k)*(IST%mH_ice(i,j,k)/rho_ice)
      enddo
      XB(6,i,j) = G%mask2dT(i,j)
-     if (cvr > 0.) then
-        WH_HI(i,j) = WH_HI(i,j) / cvr
-     else
-        WH_HI(i,j) = 0.0
-     endif
   enddo ; enddo
   
   ! Update the wide halos
   call pass_var(WH_SIC, CNN%CNN_Domain)
   call pass_var(WH_SST, CNN%CNN_Domain)
-  call pass_vector(WH_UI, WH_VI, CNN%CNN_Domain, stagger=CGRID_NE)
-  call pass_var(WH_HI, CNN%CNN_Domain)
-  call pass_var(WH_TS, CNN%CNN_Domain)
-  call pass_var(WH_SSS, CNN%CNN_Domain)
   call pass_var(WH_mask, CNN%CNN_Domain)
 
   ! Combine arrays for CNN input
@@ -225,12 +198,7 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, CNN, dt_slow)
   do j=jsdw,jedw ; do i=isdw,iedw 
      XA(1,i,j) = WH_SIC(i,j)
      XA(2,i,j) = WH_SST(i,j)
-     XA(3,i,j) = WH_UI(i,j)
-     XA(4,i,j) = WH_VI(i,j)
-     XA(5,i,j) = WH_HI(i,j)
-     XA(6,i,j) = WH_TS(i,j)
-     XA(7,i,j) = WH_SSS(i,j)
-     XA(8,i,j) = WH_mask(i,j)
+     XA(3,i,j) = WH_mask(i,j)
   enddo ; enddo
 
   ! Run Python script for CNN inference
@@ -295,7 +263,7 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, CNN, dt_slow)
      enddo
      IST%part_size(i,j,0) = posterior(i,j,0)
      if (CNN%do_SSTadj) then !apply heat flux from ocean to ice to retain newly formed sea ice
-        if (sic_inc > 0 .and. OSS%SST_C(i,j) > OSS%T_fr_ocn(i,j)) then
+        if (sic_inc > 0.0 .and. OSS%SST_C(i,j) > OSS%T_fr_ocn(i,j)) then
            IOF%flux_sh_ocn_top(i,j) = IOF%flux_sh_ocn_top(i,j) - &
                 ((OSS%T_fr_ocn(i,j) - OSS%SST_C(i,j)) * (1035.0*3925.0) * (CNN%piston_SSTadj/86400.0)) !1035 = reference density, 3925 = Cp of water
            !IOF%melt_nudge(i,j) - this applies a fresh water flux from ice to ocean to adjust SSS
