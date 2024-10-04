@@ -10,10 +10,9 @@ use MOM_domains,               only : pass_var, pass_vector, CGRID_NE
 use SIS_diag_mediator,         only : register_SIS_diag_field
 use SIS_diag_mediator,         only : post_SIS_data, post_data=>post_SIS_data
 use SIS_diag_mediator,         only : SIS_diag_ctrl
-use SIS2_ice_thm,              only : get_SIS2_thermo_coefs
 use SIS_types,                 only : ice_state_type, ocean_sfc_state_type, fast_ice_avg_type, ice_ocean_flux_type
+use SIS2_ice_thm,              only : get_SIS2_thermo_coefs, enthalpy_liquid_freeze
 use MOM_diag_mediator,         only : time_type
-!use MOM_EOS,                   only : EOS_type, calculate_density_derivs
 use MOM_file_parser,           only : get_param, param_file_type
 use Forpy_interface,           only : forpy_run_python, python_interface
 
@@ -58,9 +57,9 @@ type, public :: CNN_CS ; private
   logical :: do_SSTadj !< apply a heat flux under sea ice
   real    :: piston_SSTadj !< piston velocity of SST restoring
   character(len=300)  :: netA_weights !< Optimized weights for Network A
-  character(len=300)  :: netB_weights !< Optimized weights for Network B
-  character(len=300)  :: netA_stats !< Normalization statistics for Network A
-  character(len=300)  :: netB_stats !< Normalization statistics for Network B
+  character(len=300)  :: netB_weights
+  character(len=300)  :: netA_stats
+  character(len=300)  :: netB_stats
 
   type(SIS_diag_ctrl), pointer :: diag => NULL() !< A type that regulates diagnostics output
   !>@{ Diagnostic handles
@@ -98,7 +97,7 @@ subroutine CNN_init(Time,G,param_file,diag,CS)
       "Piston velocity with which to restore SST after CNN correction", &
       units="m day-1", default=4.0)
 
-    call get_param(param_file, mdl, "NETA_WEIGHTS", CS%netA_weights, &
+  call get_param(param_file, mdl, "NETA_WEIGHTS", CS%netA_weights, &
       "Optimized weights for Network A", &
       default="/gpfs/f5/scratch/gfdl_o/William.Gregory/CNNForpy/NetworkA_weights_SPEAR.pt")
 
@@ -175,23 +174,29 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, CNN, dt_slow)
   integer :: i, j, k, m
   integer :: is, ie, js, je, ncat, nlay
   integer :: isdw, iedw, jsdw, jedw
-  real    :: cvr, Ti, qi_new, sic_inc
-  real :: drho_dT(1), drho_dS(1)
-  real :: rho_ice, Cp_water
-  !type(EOS_type), pointer :: EOS => NULL()
+  real    :: cvr, sithick, cvr_old
+
+  real, dimension(IG%NkIce) :: S_col      ! The salinity of a column of ice [gSalt kg-1].
+  real :: qflx_res_ice
+  real :: e2m_tot     ! The total enthalpy required to melt all ice and snow [J m-2].
+  real :: rho_ice
+  real :: enth_units
+  real :: LatHtFus
+  real :: LatHtVap
+  logical :: spec_thermo_sal  ! If true, use the specified salinities of the
+                              ! various sub-layers of the ice for all thermodynamic
+                              ! calculations; otherwise use the prognostic
+                              ! salinity fields for these calculations.
   
-  real, parameter :: &    !from ice_therm_vertical.F90
-       phi_init = 0.75, & !initial liquid fraction of frazil ice
-       Si_new = 5.0       !salinity of mushy ice (ppt)
-
-  call get_SIS2_thermo_coefs(IST%ITV, Cp_Water=Cp_water, rho_ice=rho_ice)!, EOS=EOS)
-
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; ncat = IG%CatIce ; nlay = IG%NkIce
   isdw = CNN%isdw; iedw = CNN%iedw; jsdw = CNN%jsdw; jedw = CNN%jedw
-  if (.not.allocated(IOF%melt_nudge)) allocate(IOF%melt_nudge(is:ie,js:je))
 
   hmid = 0.0
   hmid(1) = 0.05 ; hmid(2) = 0.2 ; hmid(3) = 0.5 ; hmid(4) = 0.9 ; hmid(5) = 1.1
+
+  call get_SIS2_thermo_coefs(IST%ITV, ice_salinity=S_col, enthalpy_units=enth_units, &
+                   rho_ice=rho_ice, specified_thermo_salinity=spec_thermo_sal, &
+                   Latent_fusion=LatHtFus, Latent_vapor=LatHtVap)
 
   call pass_vector(IST%u_ice_C, IST%v_ice_C, G%Domain, stagger=CGRID_NE)
   
@@ -293,143 +298,56 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, CNN, dt_slow)
      enddo
      posterior(i,j,0) = 1 - cvr
   enddo; enddo
-  
-  !update sea ice/ocean variables based on corrected sea ice state
-  Ti = min(liquidus_temperature_mush(Si_new/phi_init),-0.1)
-  qi_new = enthalpy_ice(Ti, Si_new)
+
   do j=js,je ; do i=is,ie
+     qflx_res_ice = 0.0
+     e2m_tot = 0.0
      cvr = 1 - posterior(i,j,0)
-     sic_inc = cvr - (1-IST%part_size(i,j,0))
+     cvr_old = 1 - IST%part_size(i,j,0)
+     sithick = 0.0
      do k=1,ncat
-        !have added ice to grid cell which was previously ice free
-        if (posterior(i,j,k)>0.0 .and. IST%part_size(i,j,k)<=0.0) then
-           IST%mH_ice(i,j,k) = hmid(k)*rho_ice
-           IST%mH_snow(i,j,k) = 0.0
-           IST%mH_pond(i,j,k) = 0.0
-           IST%enth_snow(i,j,k,1) = 0.0
+        !the enthalpy_liquid_freeze term is for the brine pockets in sea ice. So its enth_brine - enth_ice
+        e2m_tot = (IST%part_size(i,j,k)*IST%mH_snow(i,j,k)) * IG%H_to_kg_m2 * &
+                       ((enthalpy_liquid_freeze(0.0, IST%ITV) - &
+                       IST%enth_snow(i,j,k,1)) / enth_units)
+        if (spec_thermo_sal) then 
            do m=1,nlay
-              IST%enth_ice(i,j,k,m) = qi_new/rho_ice
-              IST%sal_ice(i,j,k,m) = Si_new
+              e2m_tot = e2m_tot + (IST%part_size(i,j,k)*IST%mH_ice(i,j,k) * IG%H_to_kg_m2) * &
+                           ((enthalpy_liquid_freeze(S_col(m), IST%ITV) - &
+                           IST%enth_ice(i,j,k,m)) / enth_units)
            enddo
-        !have removed all sea in a grid cell
-        elseif (posterior(i,j,k)<=0.0 .and. IST%part_size(i,j,k)>0.0) then
-           IST%mH_ice(i,j,k) = 0.0
-           IST%mH_snow(i,j,k) = 0.0
-           IST%mH_pond(i,j,k) = 0.0
-           IST%enth_snow(i,j,k,1) = 0.0
+        else
            do m=1,nlay
-              IST%enth_ice(i,j,k,m) = 0.0
-              IST%sal_ice(i,j,k,m) = 0.0
+              e2m_tot = e2m_tot + (IST%part_size(i,j,k)*IST%mH_ice(i,j,k) * IG%H_to_kg_m2) * &
+                       ((enthalpy_liquid_freeze(IST%sal_ice(i,j,k,m), IST%ITV) - &
+                       IST%enth_ice(i,j,k,m)) / enth_units)
            enddo
         endif
-        IST%part_size(i,j,k) = posterior(i,j,k)
+        if (posterior(i,j,k)>0 .and. IST%part_size(i,j,k)<=0) then
+           sithick = sithick + hmid(k)*posterior(i,j,k)
+        else
+           sithick = sithick + posterior(i,j,k)*(IST%mH_ice(i,j,k)/rho_ice)
+        endif   
      enddo
-     IST%part_size(i,j,0) = posterior(i,j,0)
-     if (CNN%do_SSTadj) then !apply heat/freshwater flux to retain newly formed sea ice
-        if (sic_inc > 0 .and. OSS%SST_C(i,j) > OSS%T_fr_ocn(i,j)) then
-           IOF%flux_sh_ocn_top(i,j) = IOF%flux_sh_ocn_top(i,j) - &
-                ((OSS%T_fr_ocn(i,j) - OSS%SST_C(i,j)) * (1035.0*Cp_water) * (CNN%piston_SSTadj/86400.0)) !1035 = reference density
-           
-           !call calculate_density_derivs(OSS%SST_C(i:i,j),OSS%s_surf(i:i,j),IOF%pres_ocn_top(i:i,j), & !FIA%p_atm_surf or IOF%pres_ocn_top? or FIA%p_atm_surf + IOF%pres_ocn_top? or pressure = 0?
-           !     drho_dT,drho_dS,1,1,EOS)
-           !IOF%melt_nudge(i,j) = (-(sic_inc*10000)*drho_dT(1)) / &
-           !     ((Cp_water*drho_dS(1)) * max(OSS%s_surf(i,j), 1.0) )
-        endif
+     if (cvr > 0.0) then
+        sithick = sithick/cvr
+     else
+        sithick = 0.0
      endif
-  enddo; enddo
      
+     qflx_res_ice = (LatHtFus*rho_ice*sithick*cvr-e2m_tot) / (86400.0*5.0) !5-day restoring time-scale
+     if (cvr > cvr_old) then
+        FIA%frazil_left(i,j) = FIA%frazil_left(i,j) + abs(qflx_res_ice)*dt_slow
+     elseif (cvr < cvr_old) then
+        do k=1,ncat
+           FIA%bmelt(i,j,k) = FIA%bmelt(i,j,k) + abs(qflx_res_ice)*dt_slow
+        enddo
+     endif
+     
+  enddo ; enddo
+
 end subroutine CNN_inference
 
-! update sea ice variables as done in DA:
-! /ncrc/home1/Yongfei.Zhang/dart_manhattan/models/sis/dart_to_sis.f90
-  
 !=======================================================================
-
-function liquidus_temperature_mush(Sbr) result(zTin)
-
-  ! liquidus relation: equilibrium temperature as function of brine salinity
-  ! based on empirical data from Assur (1958)
-
-  real, intent(in) :: &
-       Sbr    ! ice brine salinity (ppt)
-
-  real :: &
-       zTin   ! ice layer temperature (C)
-
-  real :: &
-       t_high ! mask for high temperature liquidus region
-
-  ! liquidus break
-  real, parameter :: &
-     Sb_liq =  123.66702800276086    ! salinity of liquidus break
-
-  ! constant numbers from ice_constants.F90
-  real, parameter :: &
-       c1      = 1.0 , &
-       c1000   = 1000
-
-  ! liquidus relation - higher temperature region
-  real, parameter :: &
-       az1_liq = -18.48 ,&
-       bz1_liq =   0.0
-  ! liquidus relation - lower temperature region
-  real, parameter :: &
-       az2_liq = -10.3085,  &
-       bz2_liq =  62.4
-
-  ! basic liquidus relation constants
-  real, parameter :: &
-       az1p_liq = az1_liq / c1000, &
-       bz1p_liq = bz1_liq / c1000, &
-       az2p_liq = az2_liq / c1000, &
-       bz2p_liq = bz2_liq / c1000
-
-  ! brine salinity to temperature
-  real, parameter :: &
-     M1_liq = az1_liq            , &
-     N1_liq = -az1p_liq          , &
-     O1_liq = -bz1_liq / az1_liq , &
-     M2_liq = az2_liq            , &
-     N2_liq = -az2p_liq          , &
-     O2_liq = -bz2_liq / az2_liq
-
-  t_high = merge(1.0, 0.0, (Sbr <= Sb_liq))
-
-  zTin = ((Sbr / (M1_liq + N1_liq * Sbr)) + O1_liq) * t_high + &
-        ((Sbr / (M2_liq + N2_liq * Sbr)) + O2_liq) * (1.0 - t_high)
-
-end function liquidus_temperature_mush
-
-!=======================================================================
-
-function enthalpy_ice(zTin, zSin) result(zqin)
-
-
-  real, intent(in) :: &
-       zTin, & ! ice layer temperature (C)
-       zSin    ! ice layer bulk salinity (ppt)
-
-  real :: &
-       zqin    ! ice layer enthalpy (J m-3) 
-
-  real, parameter :: CW  = 3925   ! specific heat of water ~ J/kg/K
-  real, parameter :: CI  = 2100 ! specific heat of fresh ice ~ J/kg/K
-  real, parameter :: LATICE  = 3.34e5   ! latent heat of fusion ~ J/kg
-  real, parameter :: MIU = 0.054
-
-  ! from cice/src/drivers/cesm/ice_constants.F90
-  real :: cp_wtr, cp_ice, Lfresh, Tm
-  cp_ice    = CI  ! specific heat of fresh ice (J/kg/K)
-  cp_wtr    = CW   ! specific heat of ocn    (J/kg/K)
-  Lfresh    = LATICE ! latent heat of melting of fresh ice (J/kg)
-
-  Tm = - MIU*zSin
-
-  zqin = cp_wtr*zTin + cp_ice*(zTin - Tm) + (cp_wtr - cp_ice)*Tm*log(zTin/Tm) + Lfresh*(Tm/zTin-1.0)
-
-end function enthalpy_ice
-
-!=======================================================================
-
 
 end module SIS_G23_CNN
