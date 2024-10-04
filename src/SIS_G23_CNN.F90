@@ -10,8 +10,10 @@ use MOM_domains,               only : pass_var, pass_vector, CGRID_NE
 use SIS_diag_mediator,         only : register_SIS_diag_field
 use SIS_diag_mediator,         only : post_SIS_data, post_data=>post_SIS_data
 use SIS_diag_mediator,         only : SIS_diag_ctrl
+use SIS2_ice_thm,              only : get_SIS2_thermo_coefs
 use SIS_types,                 only : ice_state_type, ocean_sfc_state_type, fast_ice_avg_type, ice_ocean_flux_type
 use MOM_diag_mediator,         only : time_type
+use MOM_EOS,                   only : EOS_type, calculate_density_derivs
 use MOM_file_parser,           only : get_param, param_file_type
 use Forpy_interface,           only : forpy_run_python, python_interface
 
@@ -98,19 +100,19 @@ subroutine CNN_init(Time,G,param_file,diag,CS)
 
     call get_param(param_file, mdl, "NETA_WEIGHTS", CS%netA_weights, &
       "Optimized weights for Network A", &
-      default="/gpfs/f5/scratch/gfdl_o/William.Gregory/CNNForpy/NetworkA_weights_G23_notend_noSW.pt")
+      default="/gpfs/f5/scratch/gfdl_o/William.Gregory/CNNForpy/NetworkA_weights_SPEAR.pt")
 
   call get_param(param_file, mdl, "NETB_WEIGHTS", CS%netB_weights, &
       "Optimized weights for Network B", &
-      default="/gpfs/f5/scratch/gfdl_o/William.Gregory/CNNForpy/NetworkA_weights_G23_notend_noSW.pt")
+      default="/gpfs/f5/scratch/gfdl_o/William.Gregory/CNNForpy/NetworkA_weights_SPEAR.pt")
 
   call get_param(param_file, mdl, "NETA_STATS", CS%netA_stats, &
       "Normalization statistics for Network A", &
-      default="/gpfs/f5/scratch/gfdl_o/William.Gregory/CNNForpy/NetworkA_statistics_notend_noSW_1982-2017_allsamples.npz")
+      default="/gpfs/f5/scratch/gfdl_o/William.Gregory/CNNForpy/NetworkA_statistics_SPEAR_1982-2017.npz")
 
   call get_param(param_file, mdl, "NETB_STATS", CS%netB_stats, &
       "Normalization statistics for Network B", &
-      default="/gpfs/f5/scratch/gfdl_o/William.Gregory/CNNForpy/NetworkB_statistics_notend_noSW_1982-2017_allsamples.npz")
+      default="/gpfs/f5/scratch/gfdl_o/William.Gregory/CNNForpy/NetworkB_statistics_SPEAR_1982-2017.npz")
   
   wd_halos(1) = CS%CNN_halo_size
   wd_halos(2) = CS%CNN_halo_size
@@ -168,18 +170,25 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, CNN, dt_slow)
                                     :: posterior  !< updated part_size (bounded between 0 and 1)
   
   real, dimension(5) :: hmid
+  logical, dimension(5) :: negatives
+  real    :: positives, dists
   integer :: i, j, k, m
   integer :: is, ie, js, je, ncat, nlay
   integer :: isdw, iedw, jsdw, jedw
   real    :: cvr, Ti, qi_new, sic_inc
+  real :: drho_dT(1), drho_dS(1)
+  real :: rho_ice, Cp_water
+  type(EOS_type), pointer :: EOS => NULL()
   
-  real, parameter :: rho_ice = 905.0 ! The nominal density of sea ice [R ~> kg m-3]
   real, parameter :: &    !from ice_therm_vertical.F90
        phi_init = 0.75, & !initial liquid fraction of frazil ice
        Si_new = 5.0       !salinity of mushy ice (ppt)
 
+  call get_SIS2_thermo_coefs(IST%ITV, Cp_Water=Cp_water, rho_ice=rho_ice, EOS=EOS)
+
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; ncat = IG%CatIce ; nlay = IG%NkIce
   isdw = CNN%isdw; iedw = CNN%iedw; jsdw = CNN%jsdw; jedw = CNN%jedw
+  if (.not.allocated(IOF%melt_nudge)) allocate(IOF%melt_nudge(is:ie,js:je))
 
   hmid = 0.0
   hmid(1) = 0.05 ; hmid(2) = 0.2 ; hmid(3) = 0.5 ; hmid(4) = 0.9 ; hmid(5) = 1.1
@@ -241,13 +250,36 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, CNN, dt_slow)
   !Update category concentrations & bound between 0 and 1
   posterior = 0.0
   do j=js,je ; do i=is,ie
-     cvr = 0.0
      do k=1,ncat
         IST%dCN(i,j,k) = dCN(i,j,k) !save for diagnostic
-        posterior(i,j,k) = IST%part_size(i,j,k) + IST%dCN(i,j,k) 
-        if (posterior(i,j,k)<0.0) then
-           posterior(i,j,k) = 0.0
-        endif
+        posterior(i,j,k) = IST%part_size(i,j,k) + IST%dCN(i,j,k)
+     enddo
+
+     do
+        negatives = (posterior(i,j,1:) < 0.0)
+        if (.not. any(negatives)) exit
+
+        dists = 0.0
+        positives = 0.0
+        do k=1,ncat
+           if (negatives(k)) then
+              dists = dists + abs(posterior(i,j,k))
+           elseif (posterior(i,j,k) > 0.0) then
+              positives = positives + 1.0
+           endif
+        enddo
+
+        do k=1,ncat
+           if (posterior(i,j,k) > 0.0) then
+              posterior(i,j,k) = posterior(i,j,k) - dists/positives
+           elseif (posterior(i,j,k) < 0.0) then
+              posterior(i,j,k) = 0.0
+           endif   
+        enddo
+     enddo
+
+     cvr = 0.0
+     do k=1,ncat
         cvr = cvr + posterior(i,j,k)
      enddo
      if (cvr>1) then
@@ -267,7 +299,7 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, CNN, dt_slow)
   qi_new = enthalpy_ice(Ti, Si_new)
   do j=js,je ; do i=is,ie
      cvr = 1 - posterior(i,j,0)
-     sic_inc = 0.0
+     sic_inc = cvr - (1-IST%part_size(i,j,0))
      do k=1,ncat
         !have added ice to grid cell which was previously ice free
         if (posterior(i,j,k)>0.0 .and. IST%part_size(i,j,k)<=0.0) then
@@ -291,14 +323,17 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, CNN, dt_slow)
            enddo
         endif
         IST%part_size(i,j,k) = posterior(i,j,k)
-        sic_inc = sic_inc + IST%dCN(i,j,k)
      enddo
      IST%part_size(i,j,0) = posterior(i,j,0)
-     if (CNN%do_SSTadj) then !apply heat flux from ocean to ice to retain newly formed sea ice
+     if (CNN%do_SSTadj) then !apply heat/freshwater flux to retain newly formed sea ice
         if (sic_inc > 0 .and. OSS%SST_C(i,j) > OSS%T_fr_ocn(i,j)) then
-           IOF%flux_sh_ocn_top(i,j) = IOF%flux_sh_ocn_top(i,j) - &
-                ((OSS%T_fr_ocn(i,j) - OSS%SST_C(i,j)) * (1035.0*3925.0) * (CNN%piston_SSTadj/86400.0)) !1035 = reference density, 3925 = Cp of water
-           !IOF%melt_nudge(i,j) - this applies a fresh water flux from ice to ocean to adjust SSS
+           !IOF%flux_sh_ocn_top(i,j) = IOF%flux_sh_ocn_top(i,j) - &
+           !     ((OSS%T_fr_ocn(i,j) - OSS%SST_C(i,j)) * (1035.0*Cp_water) * (CNN%piston_SSTadj/86400.0)) !1035 = reference density
+           
+           call calculate_density_derivs(OSS%SST_C(i:i,j),OSS%s_surf(i:i,j),IOF%pres_ocn_top(i:i,j), & !FIA%p_atm_surf or IOF%pres_ocn_top? or FIA%p_atm_surf + IOF%pres_ocn_top? or pressure = 0?
+                drho_dT,drho_dS,1,1,EOS)
+           IOF%melt_nudge(i,j) = (-(sic_inc*10000)*drho_dT(1)) / &
+                ((Cp_water*drho_dS(1)) * max(OSS%s_surf(i,j), 1.0) )
         endif
      endif
   enddo; enddo

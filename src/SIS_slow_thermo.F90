@@ -781,12 +781,13 @@ subroutine SIS2_thermodynamics(IST, dt_slow, CS, OSS, FIA, IOF, G, IG)
       endif
     enddo ; enddo
   endif
-  call mpp_clock_end(iceClock6)
 
   !!! WG !!!
   !if (CS%use_G23_CNN) &       
   !     call CNN_inference(IST, OSS, FIA, IOF, G, IG, CS%python, CS%CNN, dt_slow)
   !!! WG end !!!
+  
+  call mpp_clock_end(iceClock6)
 
   if (CS%column_check) then
     enth_prev(:,:,:) = 0.0 ; heat_in(:,:,:) = 0.0
