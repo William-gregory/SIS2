@@ -1980,7 +1980,7 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
   nudge_sea_ice = .false. ; call read_param(param_file, "NUDGE_SEA_ICE", nudge_sea_ice)
   !!!WG
   use_G23_CNN = .false. ; call read_param(param_file, "USE_G23_CNN", use_G23_CNN)
-  if ((nudge_sea_ice) .or. (use_G23_CNN)) then
+  if (nudge_sea_ice) then! .or. (use_G23_CNN)) then
      init_EOS = .true.
   else
      init_EOS = .false.

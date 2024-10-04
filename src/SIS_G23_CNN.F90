@@ -13,7 +13,7 @@ use SIS_diag_mediator,         only : SIS_diag_ctrl
 use SIS2_ice_thm,              only : get_SIS2_thermo_coefs
 use SIS_types,                 only : ice_state_type, ocean_sfc_state_type, fast_ice_avg_type, ice_ocean_flux_type
 use MOM_diag_mediator,         only : time_type
-use MOM_EOS,                   only : EOS_type, calculate_density_derivs
+!use MOM_EOS,                   only : EOS_type, calculate_density_derivs
 use MOM_file_parser,           only : get_param, param_file_type
 use Forpy_interface,           only : forpy_run_python, python_interface
 
@@ -178,13 +178,13 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, CNN, dt_slow)
   real    :: cvr, Ti, qi_new, sic_inc
   real :: drho_dT(1), drho_dS(1)
   real :: rho_ice, Cp_water
-  type(EOS_type), pointer :: EOS => NULL()
+  !type(EOS_type), pointer :: EOS => NULL()
   
   real, parameter :: &    !from ice_therm_vertical.F90
        phi_init = 0.75, & !initial liquid fraction of frazil ice
        Si_new = 5.0       !salinity of mushy ice (ppt)
 
-  call get_SIS2_thermo_coefs(IST%ITV, Cp_Water=Cp_water, rho_ice=rho_ice, EOS=EOS)
+  call get_SIS2_thermo_coefs(IST%ITV, Cp_Water=Cp_water, rho_ice=rho_ice)!, EOS=EOS)
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; ncat = IG%CatIce ; nlay = IG%NkIce
   isdw = CNN%isdw; iedw = CNN%iedw; jsdw = CNN%jsdw; jedw = CNN%jedw
@@ -327,13 +327,13 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, CNN, dt_slow)
      IST%part_size(i,j,0) = posterior(i,j,0)
      if (CNN%do_SSTadj) then !apply heat/freshwater flux to retain newly formed sea ice
         if (sic_inc > 0 .and. OSS%SST_C(i,j) > OSS%T_fr_ocn(i,j)) then
-           !IOF%flux_sh_ocn_top(i,j) = IOF%flux_sh_ocn_top(i,j) - &
-           !     ((OSS%T_fr_ocn(i,j) - OSS%SST_C(i,j)) * (1035.0*Cp_water) * (CNN%piston_SSTadj/86400.0)) !1035 = reference density
+           IOF%flux_sh_ocn_top(i,j) = IOF%flux_sh_ocn_top(i,j) - &
+                ((OSS%T_fr_ocn(i,j) - OSS%SST_C(i,j)) * (1035.0*Cp_water) * (CNN%piston_SSTadj/86400.0)) !1035 = reference density
            
-           call calculate_density_derivs(OSS%SST_C(i:i,j),OSS%s_surf(i:i,j),IOF%pres_ocn_top(i:i,j), & !FIA%p_atm_surf or IOF%pres_ocn_top? or FIA%p_atm_surf + IOF%pres_ocn_top? or pressure = 0?
-                drho_dT,drho_dS,1,1,EOS)
-           IOF%melt_nudge(i,j) = (-(sic_inc*10000)*drho_dT(1)) / &
-                ((Cp_water*drho_dS(1)) * max(OSS%s_surf(i,j), 1.0) )
+           !call calculate_density_derivs(OSS%SST_C(i:i,j),OSS%s_surf(i:i,j),IOF%pres_ocn_top(i:i,j), & !FIA%p_atm_surf or IOF%pres_ocn_top? or FIA%p_atm_surf + IOF%pres_ocn_top? or pressure = 0?
+           !     drho_dT,drho_dS,1,1,EOS)
+           !IOF%melt_nudge(i,j) = (-(sic_inc*10000)*drho_dT(1)) / &
+           !     ((Cp_water*drho_dS(1)) * max(OSS%s_surf(i,j), 1.0) )
         endif
      endif
   enddo; enddo
