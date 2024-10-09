@@ -10,10 +10,9 @@ use MOM_domains,               only : pass_var, pass_vector, CGRID_NE
 use SIS_diag_mediator,         only : register_SIS_diag_field
 use SIS_diag_mediator,         only : post_SIS_data, post_data=>post_SIS_data
 use SIS_diag_mediator,         only : SIS_diag_ctrl
-use SIS2_ice_thm,              only : get_SIS2_thermo_coefs
 use SIS_types,                 only : ice_state_type, ocean_sfc_state_type, fast_ice_avg_type, ice_ocean_flux_type
+use SIS2_ice_thm,              only : get_SIS2_thermo_coefs, enthalpy_liquid_freeze
 use MOM_diag_mediator,         only : time_type
-!use MOM_EOS,                   only : EOS_type, calculate_density_derivs
 use MOM_file_parser,           only : get_param, param_file_type
 use Forpy_interface,           only : forpy_run_python, python_interface
 
@@ -55,12 +54,11 @@ type, public :: CNN_CS ; private
   integer :: jsdw !< The lower j-memory limit for the wide halo arrays.
   integer :: jedw !< The upper j-memory limit for the wide halo arrays.
   integer :: CNN_halo_size  !< Halo size at each side of subdomains
-  logical :: do_SSTadj !< apply a heat flux under sea ice
-  real    :: piston_SSTadj !< piston velocity of SST restoring
+  real    :: CNN_restore_timescale !< timescale of heat flux under sea ice
   character(len=300)  :: netA_weights !< Optimized weights for Network A
-  character(len=300)  :: netB_weights !< Optimized weights for Network B
-  character(len=300)  :: netA_stats !< Normalization statistics for Network A
-  character(len=300)  :: netB_stats !< Normalization statistics for Network B
+  character(len=300)  :: netB_weights
+  character(len=300)  :: netA_stats
+  character(len=300)  :: netB_stats
 
   type(SIS_diag_ctrl), pointer :: diag => NULL() !< A type that regulates diagnostics output
   !>@{ Diagnostic handles
@@ -90,15 +88,11 @@ subroutine CNN_init(Time,G,param_file,diag,CS)
       "Halo size at each side of subdomains, depends on CNN architecture.", & 
       units="nondim", default=4)
 
-  call get_param(param_file, mdl, "DO_SSTADJ", CS%do_SSTadj, &
-      "Whether to apply heat flux under sea ice for sea ice added by CNN", & 
-      default=.false.)
+  call get_param(param_file, mdl, "CNN_RESTORE_TIMESCALE", CS%CNN_restore_timescale, &
+      "Timescale over which to apply restoring heat flux associated with ML correction", & 
+      units="days", default=10.0)
 
-  call get_param(param_file, mdl, "PISTON_SSTADJ", CS%piston_SSTadj, &
-      "Piston velocity with which to restore SST after CNN correction", &
-      units="m day-1", default=4.0)
-
-    call get_param(param_file, mdl, "NETA_WEIGHTS", CS%netA_weights, &
+  call get_param(param_file, mdl, "NETA_WEIGHTS", CS%netA_weights, &
       "Optimized weights for Network A", &
       default="/gpfs/f5/scratch/gfdl_o/William.Gregory/CNNForpy/NetworkA_weights_SPEAR.pt")
 
@@ -174,22 +168,32 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, CNN, dt_slow)
   integer :: is, ie, js, je, ncat, nlay
   integer :: isdw, iedw, jsdw, jedw
   real    :: cvr, Ti, qi_new, sic_inc
-  real :: drho_dT(1), drho_dS(1)
-  real :: rho_ice, Cp_water
-  !type(EOS_type), pointer :: EOS => NULL()
+
+  real, dimension(IG%NkIce) :: S_col      ! The salinity of a column of ice [gSalt kg-1].
+  real :: qflx_res_ice
+  real :: e2m_old     ! The total enthalpy required to melt all ice and snow [J m-2].
+  real :: e2m_new
+  real :: rho_ice
+  real :: enth_units
+  logical :: spec_thermo_sal  ! If true, use the specified salinities of the
+                              ! various sub-layers of the ice for all thermodynamic
+                              ! calculations; otherwise use the prognostic
+                              ! salinity fields for these calculations.
   
+  
+  !real, parameter :: rho_ice = 905.0 ! The nominal density of sea ice [R ~> kg m-3]
   real, parameter :: &    !from ice_therm_vertical.F90
        phi_init = 0.75, & !initial liquid fraction of frazil ice
        Si_new = 5.0       !salinity of mushy ice (ppt)
 
-  call get_SIS2_thermo_coefs(IST%ITV, Cp_Water=Cp_water, rho_ice=rho_ice)!, EOS=EOS)
-
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; ncat = IG%CatIce ; nlay = IG%NkIce
   isdw = CNN%isdw; iedw = CNN%iedw; jsdw = CNN%jsdw; jedw = CNN%jedw
-  !if (.not.allocated(IOF%melt_nudge)) allocate(IOF%melt_nudge(is:ie,js:je))
 
   hmid = 0.0
   hmid(1) = 0.05 ; hmid(2) = 0.2 ; hmid(3) = 0.5 ; hmid(4) = 0.9 ; hmid(5) = 1.1
+
+  call get_SIS2_thermo_coefs(IST%ITV, ice_salinity=S_col, enthalpy_units=enth_units, &
+                   rho_ice=rho_ice, specified_thermo_salinity=spec_thermo_sal)
 
   call pass_vector(IST%u_ice_C, IST%v_ice_C, G%Domain, stagger=CGRID_NE)
   
@@ -268,53 +272,74 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, CNN, dt_slow)
      enddo
      posterior(i,j,0) = 1 - cvr
   enddo; enddo
-  
-  !update sea ice/ocean variables based on corrected sea ice state
+
   Ti = min(liquidus_temperature_mush(Si_new/phi_init),-0.1)
   qi_new = enthalpy_ice(Ti, Si_new)
   do j=js,je ; do i=is,ie
-     cvr = 1 - posterior(i,j,0)
-     sic_inc = 0.0
      do k=1,ncat
-        !have added ice to grid cell which was previously ice free
-        if (posterior(i,j,k)>0.0 .and. IST%part_size(i,j,k)<=0.0) then
-           IST%mH_ice(i,j,k) = hmid(k)*rho_ice
-           IST%mH_snow(i,j,k) = 0.0
-           IST%mH_pond(i,j,k) = 0.0
-           IST%enth_snow(i,j,k,1) = 0.0
+        e2m_old = 0.0
+        e2m_new = 0.0
+        qflx_res_ice = 0.0
+        
+        !the enthalpy_liquid_freeze term is for the brine pockets in sea ice. So its enth_brine - enth_ice
+        e2m_old = (IST%part_size(i,j,k)*IST%mH_snow(i,j,k)) * IG%H_to_kg_m2 * &
+                       ((enthalpy_liquid_freeze(0.0, IST%ITV) - &
+                       IST%enth_snow(i,j,k,1)) / enth_units)
+        if (posterior(i,j,k)>0.0 .and. IST%part_size(i,j,k)>0.0) then
+           e2m_new = (posterior(i,j,k)*IST%mH_snow(i,j,k)) * IG%H_to_kg_m2 * &
+                       ((enthalpy_liquid_freeze(0.0, IST%ITV) - &
+                       IST%enth_snow(i,j,k,1)) / enth_units)
+           if (spec_thermo_sal) then 
+              do m=1,nlay
+                 e2m_old = e2m_old + (IST%part_size(i,j,k)*IST%mH_ice(i,j,k) * IG%H_to_kg_m2) * &
+                              ((enthalpy_liquid_freeze(S_col(m), IST%ITV) - &
+                              IST%enth_ice(i,j,k,m)) / enth_units)
+                 e2m_new = e2m_new + (posterior(i,j,k)*IST%mH_ice(i,j,k) * IG%H_to_kg_m2) * &
+                              ((enthalpy_liquid_freeze(S_col(m), IST%ITV) - &
+                              IST%enth_ice(i,j,k,m)) / enth_units)
+              enddo
+           else
+              do m=1,nlay
+                 e2m_old = e2m_old + (IST%part_size(i,j,k)*IST%mH_ice(i,j,k) * IG%H_to_kg_m2) * &
+                          ((enthalpy_liquid_freeze(IST%sal_ice(i,j,k,m), IST%ITV) - &
+                          IST%enth_ice(i,j,k,m)) / enth_units)
+                 e2m_new = e2m_new + (posterior(i,j,k)*IST%mH_ice(i,j,k) * IG%H_to_kg_m2) * &
+                          ((enthalpy_liquid_freeze(IST%sal_ice(i,j,k,m), IST%ITV) - &
+                          IST%enth_ice(i,j,k,m)) / enth_units)
+              enddo
+           endif
+        elseif (posterior(i,j,k)>0.0 .and. IST%part_size(i,j,k)<=0.0) then
            do m=1,nlay
-              IST%enth_ice(i,j,k,m) = qi_new/rho_ice
-              IST%sal_ice(i,j,k,m) = Si_new
+              e2m_new = e2m_new + (posterior(i,j,k)*(hmid(k)*rho_ice) * IG%H_to_kg_m2) * &
+                          ((enthalpy_liquid_freeze(Si_new, IST%ITV) - &
+                          qi_new/rho_ice) / enth_units)
            enddo
-        !have removed all sea in a grid cell
         elseif (posterior(i,j,k)<=0.0 .and. IST%part_size(i,j,k)>0.0) then
-           IST%mH_ice(i,j,k) = 0.0
-           IST%mH_snow(i,j,k) = 0.0
-           IST%mH_pond(i,j,k) = 0.0
-           IST%enth_snow(i,j,k,1) = 0.0
-           do m=1,nlay
-              IST%enth_ice(i,j,k,m) = 0.0
-              IST%sal_ice(i,j,k,m) = 0.0
-           enddo
+           if (spec_thermo_sal) then 
+              do m=1,nlay
+                 e2m_old = e2m_old + (IST%part_size(i,j,k)*IST%mH_ice(i,j,k) * IG%H_to_kg_m2) * &
+                              ((enthalpy_liquid_freeze(S_col(m), IST%ITV) - &
+                              IST%enth_ice(i,j,k,m)) / enth_units)
+              enddo
+           else
+              do m=1,nlay
+                 e2m_old = e2m_old + (IST%part_size(i,j,k)*IST%mH_ice(i,j,k) * IG%H_to_kg_m2) * &
+                          ((enthalpy_liquid_freeze(IST%sal_ice(i,j,k,m), IST%ITV) - &
+                          IST%enth_ice(i,j,k,m)) / enth_units)
+              enddo
+           endif
         endif
-        IST%part_size(i,j,k) = posterior(i,j,k)
-        sic_inc = sic_inc + IST%dCN(i,j,k)
+        
+        qflx_res_ice = -(e2m_new-e2m_old) / (86400.0*CNN%CNN_restore_timescale)
+        if (qflx_res_ice < 0.0) then
+           FIA%frazil_left(i,j) = FIA%frazil_left(i,j) - qflx_res_ice*dt_slow
+        elseif (qflx_res_ice > 0.0) then
+           FIA%bmelt(i,j,k) = FIA%bmelt(i,j,k) + qflx_res_ice*dt_slow
+        endif
+        
      enddo
-     IST%part_size(i,j,0) = posterior(i,j,0)
-     if (CNN%do_SSTadj) then !apply heat/freshwater flux to retain newly formed sea ice
-        if (sic_inc > 0.0 .and. OSS%SST_C(i,j) > OSS%T_fr_ocn(i,j)) then
-           !IOF%flux_sh_ocn_top(i,j) = IOF%flux_sh_ocn_top(i,j) - &
-           !     ((OSS%T_fr_ocn(i,j) - OSS%SST_C(i,j)) * (1035.0*Cp_water) * (CNN%piston_SSTadj/86400.0)) !1035 = reference density
-           IOF%flux_sh_ocn_top(i,j) = IOF%flux_sh_ocn_top(i,j) - ((sic_inc*(432000.0/dt_slow))*-706.84611056 + 5.23697269) !based on linear regression of SSTrestoring heat flux vs SICDA increment
-           
-           !call calculate_density_derivs(OSS%SST_C(i:i,j),OSS%s_surf(i:i,j),IOF%pres_ocn_top(i:i,j), & !FIA%p_atm_surf or IOF%pres_ocn_top? or FIA%p_atm_surf + IOF%pres_ocn_top? or pressure = 0?
-           !     drho_dT,drho_dS,1,1,EOS)
-           !IOF%melt_nudge(i,j) = (-(sic_inc*10000)*drho_dT(1)) / &
-           !     ((Cp_water*drho_dS(1)) * max(OSS%s_surf(i,j), 1.0) )
-        endif
-     endif
-  enddo; enddo
-     
+  enddo ; enddo
+
 end subroutine CNN_inference
 
 ! update sea ice variables as done in DA:
@@ -407,6 +432,5 @@ function enthalpy_ice(zTin, zSin) result(zqin)
 end function enthalpy_ice
 
 !=======================================================================
-
 
 end module SIS_G23_CNN
