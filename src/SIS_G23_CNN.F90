@@ -14,7 +14,7 @@ use SIS2_ice_thm,              only : get_SIS2_thermo_coefs
 use SIS_types,                 only : ice_state_type, ocean_sfc_state_type, fast_ice_avg_type, ice_ocean_flux_type
 use MOM_diag_mediator,         only : time_type
 use MOM_file_parser,           only : get_param, param_file_type
-use ftorch
+use ftorch,                    only : torch_model, torch_tensor, torch_tensor_from_array, torch_model_forward, torch_model_load, torch_delete, torch_kCPU
 
 implicit none; private
 
@@ -119,9 +119,9 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CNN, dt_slow)
                                                    !! the ocean's surface state for the ice model.
   type(ice_ocean_flux_type), intent(inout)  :: IOF !< A structure containing fluxes from the ice to
                                                    !! the ocean that are calculated by the ice model.
-  type(SIS_hor_grid_type),   intent(in)     :: G      !< The horizontal grid structure
-  type(ice_grid_type),       intent(in)     :: IG     !< Sea ice specific grid
-  type(CNN_CS),              intent(in)     :: CNN    !< Control structure for CNN
+  type(SIS_hor_grid_type),   intent(in)     :: G       !< The horizontal grid structure
+  type(ice_grid_type),       intent(in)     :: IG      !< Sea ice specific grid
+  type(CNN_CS),              intent(in)     :: CNN     !< Control structure for CNN
   real,                      intent(in)     :: dt_slow !< The thermodynamic time step [T ~> s]
 
   type(torch_model) :: model_ftorch !ftorch
@@ -200,7 +200,7 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CNN, dt_slow)
        cn2_std = 0.12648644666321918, &
        cn3_std = 0.2123464013448815, &
        cn4_std = 0.1633845192717932, &
-       cn5_std = 0.30370125990558566, &
+       cn5_std = 0.30370125990558566
 
   call get_SIS2_thermo_coefs(IST%ITV, Cp_Water=Cp_water, rho_ice=rho_ice)
 
@@ -276,6 +276,7 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CNN, dt_slow)
   call torch_tensor_from_array(dSIC_torch, dSIC, [1,2], torch_kCPU)
   call torch_model_forward(model_ftorch, XA_torch, dSIC_torch)
 
+  !need to handle squeezing of outputs!!
   do j=js,je ; do i=is,ie
      if (G%mask2dT(i,j) == 0.0) then !set land values to zero
         XB(1,i,j) = 0.0
