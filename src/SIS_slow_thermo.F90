@@ -70,8 +70,6 @@ use SIS_transport, only : adjust_ice_categories, SIS_transport_CS
 use SIS_tracer_flow_control, only : SIS_tracer_flow_control_CS
 use SIS_tracer_registry, only : SIS_unpack_passive_ice_tr, SIS_repack_passive_ice_tr
 use SIS_tracer_registry, only : SIS_count_passive_tracers
-use Forpy_interface,   only : python_interface !WG
-use Forpy_interface,   only : forpy_run_python_init,forpy_run_python_finalize !WG
 use SIS_G23_CNN,       only : CNN_CS,CNN_init,CNN_inference !WG
 
 implicit none ; private
@@ -145,7 +143,6 @@ type slow_thermo_CS ; private
                             !< A pointers to the control structures for a subsidiary module
 
   !!! WG !!!
-  type(python_interface) :: python !< Python interface object
   type(CNN_CS)           :: CNN    !< Control structure for CNN
   logical :: use_G23_CNN   !< If true, use a python script to update part_size
 
@@ -471,7 +468,7 @@ subroutine slow_thermodynamics(IST, dt_slow, CS, OSS, FIA, XSF, IOF, G, IG)
   !  Other routines that do thermodynamic vertical processes should be added here
   !!! WG !!!
   if (CS%use_G23_CNN) &       
-       call CNN_inference(IST, OSS, FIA, IOF, G, IG, CS%python, CS%CNN, dt_slow)
+       call CNN_inference(IST, OSS, FIA, IOF, G, IG, CS%CNN, dt_slow)
   !!! WG end !!!
 
   ! Do tracer column physics
@@ -784,7 +781,7 @@ subroutine SIS2_thermodynamics(IST, dt_slow, CS, OSS, FIA, IOF, G, IG)
 
   !!! WG !!!
   !if (CS%use_G23_CNN) &       
-  !     call CNN_inference(IST, OSS, FIA, IOF, G, IG, CS%python, CS%CNN, dt_slow)
+  !     call CNN_inference(IST, OSS, FIA, IOF, G, IG, CS%CNN, dt_slow)
   !!! WG end !!!
   
   call mpp_clock_end(iceClock6)
@@ -1520,14 +1517,6 @@ subroutine SIS_slow_thermo_init(Time, G, IG, param_file, diag, CS, tracer_flow_C
   !!! WG !!!
   call get_param(param_file, mdl, "USE_G23_CNN", CS%use_G23_CNN, &
   "Invoke a python script to update part_size.", default=.false.)
-  call get_param(param_file, mdl, "PYTHON_DIR", CS%python_dir, &
-  "The directory in which Python scripts are found.", default=".")
-  CS%python_dir = slasher(CS%python_dir)
-  call get_param(param_file, mdl, "PYTHON_FILE", CS%python_file, &
-  "The name of the Python script for which calls pyTorch.", default="pymodule")
-  CS%python_file = trim(CS%python_file)
-  if (CS%use_G23_CNN) call forpy_run_python_init(CS%python, &
-                              trim(CS%python_dir),trim(CS%python_file))
   if (CS%use_G23_CNN) call CNN_init(Time, G, param_file, diag, CS%CNN)
   !!! WG END !!!
 
@@ -1566,7 +1555,6 @@ subroutine SIS_slow_thermo_end (CS)
 
   call SIS2_ice_thm_end(CS%ice_thm_CSp)
 
-  if (CS%use_G23_CNN) call forpy_run_python_finalize(CS%python) !WG
   if (associated(CS)) deallocate(CS)
 
 end subroutine SIS_slow_thermo_end

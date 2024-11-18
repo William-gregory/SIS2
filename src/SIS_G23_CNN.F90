@@ -15,7 +15,6 @@ use SIS_types,                 only : ice_state_type, ocean_sfc_state_type, fast
 use MOM_diag_mediator,         only : time_type
 !use MOM_EOS,                   only : EOS_type, calculate_density_derivs
 use MOM_file_parser,           only : get_param, param_file_type
-use Forpy_interface,           only : forpy_run_python, python_interface
 
 implicit none; private
 
@@ -57,8 +56,8 @@ type, public :: CNN_CS ; private
   integer :: CNN_halo_size  !< Halo size at each side of subdomains
   logical :: do_SSTadj !< apply a heat flux under sea ice
   real    :: piston_SSTadj !< piston velocity of SST restoring
-  character(len=300)  :: netA_weights !< Optimized weights for Network A
-  character(len=300)  :: netB_weights !< Optimized weights for Network B
+  character(len=300)  :: netA_script !< NetA TorchScript
+  character(len=300)  :: netB_script !< NetB TorchScript
   character(len=300)  :: netA_stats !< Normalization statistics for Network A
   character(len=300)  :: netB_stats !< Normalization statistics for Network B
 
@@ -98,13 +97,13 @@ subroutine CNN_init(Time,G,param_file,diag,CS)
       "Piston velocity with which to restore SST after CNN correction", &
       units="m day-1", default=4.0)
 
-    call get_param(param_file, mdl, "NETA_WEIGHTS", CS%netA_weights, &
-      "Optimized weights for Network A", &
-      default="/gpfs/f5/scratch/gfdl_o/William.Gregory/CNNForpy/NetworkA_weights_SPEAR.pt")
+    call get_param(param_file, mdl, "NETA_SCRIPT", CS%netA_script, &
+      "TorchScript of Network A with optimized weights", &
+      default="/gpfs/f5/scratch/gfdl_o/William.Gregory/Ftorch/scripts/NetA_script.pt")
 
-  call get_param(param_file, mdl, "NETB_WEIGHTS", CS%netB_weights, &
-      "Optimized weights for Network B", &
-      default="/gpfs/f5/scratch/gfdl_o/William.Gregory/CNNForpy/NetworkA_weights_SPEAR.pt")
+  call get_param(param_file, mdl, "NETB_SCRIPT", CS%netB_script, &
+      "TorchScript of Network B with optimized weights", &
+      default="/gpfs/f5/scratch/gfdl_o/William.Gregory/Ftorch/scripts/NetB_script.pt")
 
   call get_param(param_file, mdl, "NETA_STATS", CS%netA_stats, &
       "Normalization statistics for Network A", &
@@ -127,7 +126,7 @@ subroutine CNN_init(Time,G,param_file,diag,CS)
 end subroutine CNN_init
 
 !> Manage input and output of CNN model
-subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, CNN, dt_slow)
+subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CNN, dt_slow)
   type(ice_state_type),      intent(inout)  :: IST !< A type describing the state of the sea ice
   type(fast_ice_avg_type),   intent(inout)  :: FIA !< A type containing averages of fields
                                                    !! (mostly fluxes) over the fast updates
@@ -137,7 +136,6 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, CNN, dt_slow)
                                                    !! the ocean that are calculated by the ice model.
   type(SIS_hor_grid_type),   intent(in)     :: G      !< The horizontal grid structure
   type(ice_grid_type),       intent(in)     :: IG     !< Sea ice specific grid
-  type(python_interface),    intent(in)     :: CS     !< Python interface object
   type(CNN_CS),              intent(in)     :: CNN    !< Control structure for CNN
   real,                      intent(in)     :: dt_slow !< The thermodynamic time step [T ~> s]
 
@@ -154,11 +152,11 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CS, CNN, dt_slow)
                                    ::  WH_HI     !< mean ice thickness [m].
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
                                    ::  WH_TS     !< ice-surface skin temperature [degrees C].
-  real, dimension(SZIW_(CNN),SZJW_(CNN)) &
-                                   ::  WH_SSS    !< sea-surface salinity [ppt].
+  !real, dimension(SZIW_(CNN),SZJW_(CNN)) &
+  !                                 ::  WH_SSS    !< sea-surface salinity [ppt].
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
                                    ::  WH_mask   !< land-sea mask (0=land cells, 1=ocean cells)
-  real, dimension(8,SZIW_(CNN),SZJW_(CNN)) &
+  real, dimension(7,SZIW_(CNN),SZJW_(CNN)) &
                                    ::  XA        !< input variables to network A (predict dsiconc)
   real, dimension(6,SZI_(G),SZJ_(G)) &
                                    ::  XB        !< input variables to network B (predict dCN)
