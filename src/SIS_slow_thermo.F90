@@ -145,10 +145,6 @@ type slow_thermo_CS ; private
   !!! WG !!!
   type(CNN_CS)           :: CNN    !< Control structure for CNN
   logical :: use_G23_CNN   !< If true, use a python script to update part_size
-
-  character(len=200) :: & 
-    python_dir, & !< default = ".". The directory in which python scripts are found.
-    python_file   !< default = "pymodule" - this is the python script that calls pyTorch
   !!! WG end !!!
   
   !>@{ Diagnostic IDs
