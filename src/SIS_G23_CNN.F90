@@ -3,18 +3,18 @@
 !! system. This correction is non-conservative. See https://doi.org/10.1029/2023MS003757 for details
 module SIS_G23_CNN
 
+use, intrinsic :: iso_fortran_env, only : sp => real32
 use ice_grid,                  only : ice_grid_type
 use SIS_hor_grid,              only : SIS_hor_grid_type
 use MOM_domains,               only : clone_MOM_domain,MOM_domain_type
 use MOM_domains,               only : pass_var, pass_vector, CGRID_NE
-use SIS_diag_mediator,         only : register_SIS_diag_field
-use SIS_diag_mediator,         only : post_SIS_data, post_data=>post_SIS_data
 use SIS_diag_mediator,         only : SIS_diag_ctrl
 use SIS2_ice_thm,              only : get_SIS2_thermo_coefs
+use SIS_utils,                 only : is_NaN
 use SIS_types,                 only : ice_state_type, ocean_sfc_state_type, fast_ice_avg_type, ice_ocean_flux_type
 use MOM_diag_mediator,         only : time_type
 use MOM_file_parser,           only : get_param, param_file_type
-use ftorch!,                    only : torch_model, torch_tensor, torch_tensor_from_array, torch_model_forward, torch_model_load, torch_delete, torch_kCPU
+use ftorch
 
 implicit none; private
 
@@ -92,11 +92,11 @@ subroutine CNN_init(Time,G,param_file,diag,CS)
 
     call get_param(param_file, mdl, "NETA_SCRIPT", CS%netA_script, &
       "TorchScript of Network A with optimized weights", &
-      default="/gpfs/f5/scratch/gfdl_o/William.Gregory/Ftorch/scripts/NetA_script.pt")
+      default="/gpfs/f5/scratch/gfdl_o/William.Gregory/FTorch/Torchscripts/NetA_script.pt")
 
   call get_param(param_file, mdl, "NETB_SCRIPT", CS%netB_script, &
       "TorchScript of Network B with optimized weights", &
-      default="/gpfs/f5/scratch/gfdl_o/William.Gregory/Ftorch/scripts/NetB_script.pt")
+      default="/gpfs/f5/scratch/gfdl_o/William.Gregory/FTorch/Torchscripts/NetB_script.pt")
   
   wd_halos(1) = CS%CNN_halo_size
   wd_halos(2) = CS%CNN_halo_size
@@ -140,20 +140,18 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CNN, dt_slow)
                                    ::  WH_SSS    !< sea-surface salinity [ppt].
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
                                    ::  WH_mask   !< land-sea mask (0=land cells, 1=ocean cells)
-  real, dimension(1,7,SZIW_(CNN),SZJW_(CNN)), target &
+  real(sp), dimension(1,7,SZIW_(CNN),SZJW_(CNN)), target &
                                    ::  XA        !< input variables to network A (predict dsiconc)
-  real, dimension(1,7,SZI_(G),SZJ_(G)), target &
+  real(sp), dimension(:,:,:,:), allocatable, target &
                                    ::  XB        !< input variables to network B (predict dCN)
   
   !initialise network outputs
-  real, dimension(1,1,SZI_(G),SZJ_(G)), target &
-                                   :: dSIC     !< network A predictions of aggregate SIC corrections
-  real, dimension(SZI_(G),SZJ_(G),5), target &
-                                   :: dCN_squeeze      !< network B predictions of category SIC corrections
-  real, dimension(1,5,SZI_(G),SZJ_(G)), target &
-                                   :: dCN      !< network B predictions of category SIC corrections
+  real(sp), dimension(:,:,:,:), allocatable, target &
+                                   :: dSIC        !< network A predictions of aggregate SIC corrections
+  real(sp), dimension(:,:,:,:), allocatable, target &
+                                   :: dCN         !< network B predictions of category SIC corrections
   real, dimension(SZI_(G),SZJ_(G),0:5) &
-                                   :: posterior  !< updated part_size (bounded between 0 and 1)
+                                   :: posterior   !< updated part_size (bounded between 0 and 1)
 
   type(torch_model) :: model_ftorch !ftorch
   type(torch_tensor), dimension(1) :: XA_torch     !< input array to network A passed to PyTorch
@@ -163,8 +161,9 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CNN, dt_slow)
 
   integer :: in_layout(4) = [1,2,3,4]
   integer :: out_layout(4) = [1,2,3,4]
+  integer :: dimX, dimY
   
-  integer :: i, j, k, m
+  integer :: i, j, k, m, iT, jT
   integer :: is, ie, js, je, ncat, nlay
   integer :: isdw, iedw, jsdw, jedw
   real    :: cvr, Ti, qi_new, sic_inc
@@ -207,12 +206,20 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CNN, dt_slow)
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; ncat = IG%CatIce ; nlay = IG%NkIce
   isdw = CNN%isdw; iedw = CNN%iedw; jsdw = CNN%jsdw; jedw = CNN%jedw
-  
+  dimX = SIZE(XA,3) - 2*CNN%CNN_halo_size
+  dimY = SIZE(XA,4) - 2*CNN%CNN_halo_size
+  allocate(XB(1,7,dimX,dimY))
+  allocate(dSIC(1,1,dimX,dimY))
+  allocate(dCN(1,5,dimX,dimY))
   call pass_vector(IST%u_ice_C, IST%v_ice_C, G%Domain, stagger=CGRID_NE)
   
   !populate variables to pad for CNN halos
+  WH_SIC = 0.0 ; WH_SST = 0.0 ; WH_UI = 0.0 ; WH_VI = 0.0 ; WH_HI = 0.0 ;  WH_TS = 0.0 ; WH_SSS = 0.0 ; WH_mask = 0.0
+  XA = 0.0 ; XB = 0.0
   cvr = 0.0
   do j=js,je ; do i=is,ie
+     iT = i-CNN%CNN_halo_size
+     jT = j-CNN%CNN_halo_size
      cvr = 1 - IST%part_size(i,j,0)
      WH_SIC(i,j) = cvr
      WH_SST(i,j) = OSS%SST_C(i,j)
@@ -222,10 +229,10 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CNN, dt_slow)
      WH_SSS(i,j) = OSS%s_surf(i,j)
      WH_mask(i,j) = G%mask2dT(i,j)
      do k=1,ncat
-        XB(1,k+1,i,j) = IST%part_size(i,j,k)
+        XB(1,k+1,iT,jT) = IST%part_size(i,j,k)
         WH_HI(i,j) = WH_HI(i,j) + IST%part_size(i,j,k)*(IST%mH_ice(i,j,k)/rho_ice)
      enddo
-     XB(1,7,i,j) = G%mask2dT(i,j)
+     XB(1,7,iT,jT) = G%mask2dT(i,j)
      if (cvr > 0.) then
         WH_HI(i,j) = WH_HI(i,j) / cvr
      else
@@ -264,6 +271,7 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CNN, dt_slow)
      endif
   enddo ; enddo
 
+  dSIC = 0.0
   !Load PyTorch model for dSIC predictions
   call torch_model_load(model_ftorch, CNN%netA_script)
   call torch_tensor_from_array(XA_torch(1), XA, in_layout, torch_kCPU)
@@ -272,23 +280,26 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CNN, dt_slow)
 
   !need to handle squeezing of outputs!!
   do j=js,je ; do i=is,ie
+     iT = i-CNN%CNN_halo_size
+     jT = j-CNN%CNN_halo_size
      if (G%mask2dT(i,j) == 0.0) then !set land values to zero
-        XB(1,1,i,j) = 0.0
-        XB(1,2,i,j) = 0.0
-        XB(1,3,i,j) = 0.0
-        XB(1,4,i,j) = 0.0
-        XB(1,5,i,j) = 0.0
-        XB(1,6,i,j) = 0.0
+        XB(1,1,iT,jT) = 0.0
+        XB(1,2,iT,jT) = 0.0
+        XB(1,3,iT,jT) = 0.0
+        XB(1,4,iT,jT) = 0.0
+        XB(1,5,iT,jT) = 0.0
+        XB(1,6,iT,jT) = 0.0
      else   
-        XB(1,1,i,j) = (dSIC(1,1,i,j) - dsic_mu)/dsic_std
-        XB(1,2,i,j) = (XB(1,2,i,j) - cn1_mu)/cn1_std
-        XB(1,3,i,j) = (XB(1,3,i,j) - cn2_mu)/cn2_std
-        XB(1,4,i,j) = (XB(1,4,i,j) - cn3_mu)/cn3_std
-        XB(1,5,i,j) = (XB(1,5,i,j) - cn4_mu)/cn4_std
-        XB(1,6,i,j) = (XB(1,6,i,j) - cn5_mu)/cn5_std
+        XB(1,1,iT,jT) = (dSIC(1,1,iT,jT) - dsic_mu)/dsic_std
+        XB(1,2,iT,jT) = (XB(1,2,iT,jT) - cn1_mu)/cn1_std
+        XB(1,3,iT,jT) = (XB(1,3,iT,jT) - cn2_mu)/cn2_std
+        XB(1,4,iT,jT) = (XB(1,4,iT,jT) - cn3_mu)/cn3_std
+        XB(1,5,iT,jT) = (XB(1,5,iT,jT) - cn4_mu)/cn4_std
+        XB(1,6,iT,jT) = (XB(1,6,iT,jT) - cn5_mu)/cn5_std
      endif
   enddo ; enddo
 
+  dCN = 0.0
   !Load PyTorch model for dCN predictions
   call torch_model_load(model_ftorch, CNN%netB_script)
   call torch_tensor_from_array(XB_torch(1), XB, in_layout, torch_kCPU)
@@ -299,16 +310,22 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CNN, dt_slow)
   call torch_delete(XB_torch)
   call torch_delete(dSIC_torch)
   call torch_delete(dCN_torch)
+
   do j=js,je ; do i=is,ie
+     iT = i-CNN%CNN_halo_size
+     jT = j-CNN%CNN_halo_size
      do k=1,ncat
         if (G%mask2dT(i,j) == 0.0) then !is land
-           dCN_squeeze(i,j,k) = 0
-        else
-           dCN_squeeze(i,j,k) = dCN(1,k,i,j)
+           IST%dCN(i,j,k) = 0.0
+        else 
+           IST%dCN(i,j,k) = real(dCN(1,k,iT,jT), kind(IST%dCN))!/(432000.0/dt_slow)
+        endif
+
+        if (is_NaN(IST%dCN(i,j,k))) then
+           IST%dCN(i,j,k) = 0.0
         endif
      enddo
   enddo; enddo
-  call pass_var(dCN_squeeze, G%Domain)
 
   !Update category concentrations & bound between 0 and 1
   !This part checks if the updated SIC in any category is below zero.
@@ -316,10 +333,8 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CNN, dt_slow)
   !E.g if new SIC is [-0.2,0.1,0.2,0.3,0.4], then remove 0.2/4 from categories 2 through 5
   !E.g if new SIC is [-0.2,-0.1,0.4,0.2,0.1], then remove 0.3/3 from categories 3 through 5
   !This will continue in a 'while loop' until all categories are >= 0.
-  posterior = 0.0
   do j=js,je ; do i=is,ie
      do k=1,ncat
-        IST%dCN(i,j,k) = dCN_squeeze(i,j,k)/(432000.0/dt_slow)
         posterior(i,j,k) = IST%part_size(i,j,k) + IST%dCN(i,j,k)
      enddo
      do
@@ -335,6 +350,7 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CNN, dt_slow)
               positives = positives + 1.0
            endif
         enddo
+
         do k=1,ncat
            if (posterior(i,j,k) > 0.0) then
               posterior(i,j,k) = posterior(i,j,k) - dists/positives
@@ -391,12 +407,12 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CNN, dt_slow)
         sic_inc = sic_inc + IST%dCN(i,j,k)
      enddo
      IST%part_size(i,j,0) = posterior(i,j,0)
-     if (sic_inc > 0.0 .and. OSS%SST_C(i,j) > OSS%T_fr_ocn(i,j)) then
-        IOF%flux_sh_ocn_top(i,j) = IOF%flux_sh_ocn_top(i,j) - &
-             ((OSS%T_fr_ocn(i,j) - OSS%SST_C(i,j)) * (1035.0*Cp_water) * (CNN%piston_SSTadj/86400.0)) !1035 = reference density
-     endif
+     !if (sic_inc > 0.0 .and. OSS%SST_C(i,j) > OSS%T_fr_ocn(i,j)) then
+     !   IOF%flux_sh_ocn_top(i,j) = IOF%flux_sh_ocn_top(i,j) - &
+     !        ((OSS%T_fr_ocn(i,j) - OSS%SST_C(i,j)) * (1035.0*Cp_water) * (CNN%piston_SSTadj/86400.0)) !1035 = reference density
+     !endif
  enddo; enddo
-     
+
 end subroutine CNN_inference
 
 ! update sea ice variables as done in DA:
