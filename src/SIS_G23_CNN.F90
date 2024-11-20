@@ -137,7 +137,7 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CNN, dt_slow)
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
                                    ::  WH_TS     !< ice-surface skin temperature [degrees C].
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
-                                   ::  WH_SSS    !< sea-surface salinity [ppt].
+                                   ::  WH_SSS    !< sea-surface salinity [psu].
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
                                    ::  WH_mask   !< land-sea mask (0=land cells, 1=ocean cells)
   real(sp), dimension(1,7,SZIW_(CNN),SZJW_(CNN)), target &
@@ -232,12 +232,12 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CNN, dt_slow)
         XB(1,k+1,iT,jT) = IST%part_size(i,j,k)
         WH_HI(i,j) = WH_HI(i,j) + IST%part_size(i,j,k)*(IST%mH_ice(i,j,k)/rho_ice)
      enddo
-     XB(1,7,iT,jT) = G%mask2dT(i,j)
      if (cvr > 0.) then
         WH_HI(i,j) = WH_HI(i,j) / cvr
      else
         WH_HI(i,j) = 0.0
      endif
+     XB(1,7,iT,jT) = G%mask2dT(i,j)
   enddo ; enddo
   
   ! Update the wide halos
@@ -318,7 +318,7 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CNN, dt_slow)
         if (G%mask2dT(i,j) == 0.0) then !is land
            IST%dCN(i,j,k) = 0.0
         else 
-           IST%dCN(i,j,k) = real(dCN(1,k,iT,jT), kind(IST%dCN))!/(432000.0/dt_slow)
+           IST%dCN(i,j,k) = real(dCN(1,k,iT,jT), kind(IST%dCN))/(432000.0/dt_slow) !432000 = 5 days.
         endif
 
         if (is_NaN(IST%dCN(i,j,k))) then
