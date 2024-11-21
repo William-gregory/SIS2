@@ -140,7 +140,7 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CNN, dt_slow)
                                    ::  WH_SSS    !< sea-surface salinity [psu].
   real, dimension(SZIW_(CNN),SZJW_(CNN)) &
                                    ::  WH_mask   !< land-sea mask (0=land cells, 1=ocean cells)
-  real(sp), dimension(1,7,SZIW_(CNN),SZJW_(CNN)), target &
+  real(sp), dimension(1,8,SZIW_(CNN),SZJW_(CNN)), target &
                                    ::  XA        !< input variables to network A (predict dsiconc)
   real(sp), dimension(:,:,:,:), allocatable, target &
                                    ::  XB        !< input variables to network B (predict dCN)
@@ -153,7 +153,8 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CNN, dt_slow)
   real, dimension(SZI_(G),SZJ_(G),0:5) &
                                    :: posterior   !< updated part_size (bounded between 0 and 1)
 
-  type(torch_model) :: model_ftorch !ftorch
+  type(torch_model) :: modelA_ftorch !ftorch
+  type(torch_model) :: modelB_ftorch !ftorch
   type(torch_tensor), dimension(1) :: XA_torch     !< input array to network A passed to PyTorch
   type(torch_tensor), dimension(1) :: XB_torch     !< input array to network B passed to PyTorch
   type(torch_tensor), dimension(1) :: dSIC_torch   !< network A predictions of aggregate SIC corrections
@@ -258,7 +259,7 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CNN, dt_slow)
         XA(1,4,i,j) = 0.0
         XA(1,5,i,j) = 0.0
         XA(1,6,i,j) = 0.0
-        !XA(1,7,i,j) = 0.0
+        XA(1,7,i,j) = 0.0
      else
         XA(1,1,i,j) = (WH_SIC(i,j) - sic_mu)/sic_std
         XA(1,2,i,j) = (WH_SST(i,j) - sst_mu)/sst_std
@@ -266,17 +267,17 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CNN, dt_slow)
         XA(1,4,i,j) = (WH_VI(i,j) - vi_mu)/vi_std
         XA(1,5,i,j) = (WH_HI(i,j) - hi_mu)/hi_std
         XA(1,6,i,j) = (WH_TS(i,j) - ts_mu)/ts_std
-        !XA(1,7,i,j) = (WH_SSS(i,j) - sss_mu)/sss_std
-        XA(1,7,i,j) = WH_mask(i,j)
+        XA(1,7,i,j) = (WH_SSS(i,j) - sss_mu)/sss_std
+        XA(1,8,i,j) = WH_mask(i,j)
      endif
   enddo ; enddo
 
   dSIC = 0.0
   !Load PyTorch model for dSIC predictions
-  call torch_model_load(model_ftorch, CNN%netA_script)
+  call torch_model_load(modelA_ftorch, CNN%netA_script)
   call torch_tensor_from_array(XA_torch(1), XA, in_layout, torch_kCPU)
   call torch_tensor_from_array(dSIC_torch(1), dSIC, out_layout, torch_kCPU)
-  call torch_model_forward(model_ftorch, XA_torch, dSIC_torch)
+  call torch_model_forward(modelA_ftorch, XA_torch, dSIC_torch)
 
   !need to handle squeezing of outputs!!
   do j=js,je ; do i=is,ie
@@ -289,8 +290,12 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CNN, dt_slow)
         XB(1,4,iT,jT) = 0.0
         XB(1,5,iT,jT) = 0.0
         XB(1,6,iT,jT) = 0.0
-     else   
-        XB(1,1,iT,jT) = (dSIC(1,1,iT,jT) - dsic_mu)/dsic_std
+     else
+        if (is_NaN(real(dSIC(1,1,iT,jT),kind(IST%dCN)))) then
+           XB(1,1,iT,jT) = 0.0
+        else   
+           XB(1,1,iT,jT) = (dSIC(1,1,iT,jT) - dsic_mu)/dsic_std
+        endif
         XB(1,2,iT,jT) = (XB(1,2,iT,jT) - cn1_mu)/cn1_std
         XB(1,3,iT,jT) = (XB(1,3,iT,jT) - cn2_mu)/cn2_std
         XB(1,4,iT,jT) = (XB(1,4,iT,jT) - cn3_mu)/cn3_std
@@ -301,10 +306,10 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CNN, dt_slow)
 
   dCN = 0.0
   !Load PyTorch model for dCN predictions
-  call torch_model_load(model_ftorch, CNN%netB_script)
+  call torch_model_load(modelB_ftorch, CNN%netB_script)
   call torch_tensor_from_array(XB_torch(1), XB, in_layout, torch_kCPU)
   call torch_tensor_from_array(dCN_torch(1), dCN, out_layout, torch_kCPU)
-  call torch_model_forward(model_ftorch, XB_torch, dCN_torch)
+  call torch_model_forward(modelB_ftorch, XB_torch, dCN_torch)
 
   call torch_delete(XA_torch)
   call torch_delete(XB_torch)
@@ -326,6 +331,7 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CNN, dt_slow)
         endif
      enddo
   enddo; enddo
+  call pass_var(IST%dCN, G%Domain)
 
   !Update category concentrations & bound between 0 and 1
   !This part checks if the updated SIC in any category is below zero.
