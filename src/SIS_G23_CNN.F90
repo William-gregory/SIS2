@@ -211,16 +211,13 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CNN, dt_slow)
   dimY = SIZE(XA,4) - 2*CNN%CNN_halo_size
   allocate(XB(1,7,dimX,dimY))
   allocate(dSIC(1,1,dimX,dimY))
-  allocate(dCN(1,5,dimX,dimY))
+  allocate(dCN(1,ncat,dimX,dimY))
   call pass_vector(IST%u_ice_C, IST%v_ice_C, G%Domain, stagger=CGRID_NE)
   
   !populate variables to pad for CNN halos
   WH_SIC = 0.0 ; WH_SST = 0.0 ; WH_UI = 0.0 ; WH_VI = 0.0 ; WH_HI = 0.0 ;  WH_TS = 0.0 ; WH_SSS = 0.0 ; WH_mask = 0.0
-  XA = 0.0 ; XB = 0.0
   cvr = 0.0
   do j=js,je ; do i=is,ie
-     iT = i-CNN%CNN_halo_size
-     jT = j-CNN%CNN_halo_size
      cvr = 1 - IST%part_size(i,j,0)
      WH_SIC(i,j) = cvr
      WH_SST(i,j) = OSS%SST_C(i,j)
@@ -230,7 +227,6 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CNN, dt_slow)
      WH_SSS(i,j) = OSS%s_surf(i,j)
      WH_mask(i,j) = G%mask2dT(i,j)
      do k=1,ncat
-        XB(1,k+1,iT,jT) = IST%part_size(i,j,k)
         WH_HI(i,j) = WH_HI(i,j) + IST%part_size(i,j,k)*(IST%mH_ice(i,j,k)/rho_ice)
      enddo
      if (cvr > 0.) then
@@ -238,7 +234,6 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CNN, dt_slow)
      else
         WH_HI(i,j) = 0.0
      endif
-     XB(1,7,iT,jT) = G%mask2dT(i,j)
   enddo ; enddo
   
   ! Update the wide halos
@@ -249,7 +244,8 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CNN, dt_slow)
   call pass_var(WH_TS, CNN%CNN_Domain)
   call pass_var(WH_SSS, CNN%CNN_Domain)
   call pass_var(WH_mask, CNN%CNN_Domain)
-
+  
+  XA = 0.0
   ! Combine arrays for CNN input
   do j=jsdw,jedw ; do i=isdw,iedw
      if (G%mask2dT(i,j) == 0.0) then !set land values to zero
@@ -260,6 +256,7 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CNN, dt_slow)
         XA(1,5,i,j) = 0.0
         XA(1,6,i,j) = 0.0
         XA(1,7,i,j) = 0.0
+        XA(1,8,i,j) = 0.0
      else
         XA(1,1,i,j) = (WH_SIC(i,j) - sic_mu)/sic_std
         XA(1,2,i,j) = (WH_SST(i,j) - sst_mu)/sst_std
@@ -279,7 +276,7 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CNN, dt_slow)
   call torch_tensor_from_array(dSIC_torch(1), dSIC, out_layout, torch_kCPU)
   call torch_model_forward(modelA_ftorch, XA_torch, dSIC_torch)
 
-  !need to handle squeezing of outputs!!
+  XB = 0.0
   do j=js,je ; do i=is,ie
      iT = i-CNN%CNN_halo_size
      jT = j-CNN%CNN_halo_size
@@ -290,18 +287,21 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CNN, dt_slow)
         XB(1,4,iT,jT) = 0.0
         XB(1,5,iT,jT) = 0.0
         XB(1,6,iT,jT) = 0.0
+        XB(1,7,iT,jT) = 0.0
      else
-        if (is_NaN(real(dSIC(1,1,iT,jT),kind(IST%dCN)))) then
-           XB(1,1,iT,jT) = 0.0
-        else   
-           XB(1,1,iT,jT) = (dSIC(1,1,iT,jT) - dsic_mu)/dsic_std
-        endif
-        XB(1,2,iT,jT) = (XB(1,2,iT,jT) - cn1_mu)/cn1_std
-        XB(1,3,iT,jT) = (XB(1,3,iT,jT) - cn2_mu)/cn2_std
-        XB(1,4,iT,jT) = (XB(1,4,iT,jT) - cn3_mu)/cn3_std
-        XB(1,5,iT,jT) = (XB(1,5,iT,jT) - cn4_mu)/cn4_std
-        XB(1,6,iT,jT) = (XB(1,6,iT,jT) - cn5_mu)/cn5_std
+        XB(1,1,iT,jT) = (dSIC(1,1,iT,jT) - dsic_mu)/dsic_std
+        XB(1,2,iT,jT) = (IST%part_size(i,j,1) - cn1_mu)/cn1_std
+        XB(1,3,iT,jT) = (IST%part_size(i,j,2) - cn2_mu)/cn2_std
+        XB(1,4,iT,jT) = (IST%part_size(i,j,3) - cn3_mu)/cn3_std
+        XB(1,5,iT,jT) = (IST%part_size(i,j,4) - cn4_mu)/cn4_std
+        XB(1,6,iT,jT) = (IST%part_size(i,j,5) - cn5_mu)/cn5_std
+        XB(1,7,iT,jT) = G%mask2dT(i,j)
      endif
+     do k=1,7
+        if (is_NaN(real(XB(1,k,iT,jT),kind(IST%dCN)))) then
+           XB(1,k,iT,jT) = 0.0
+        endif
+     enddo
   enddo ; enddo
 
   dCN = 0.0
@@ -311,27 +311,28 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CNN, dt_slow)
   call torch_tensor_from_array(dCN_torch(1), dCN, out_layout, torch_kCPU)
   call torch_model_forward(modelB_ftorch, XB_torch, dCN_torch)
 
-  call torch_delete(XA_torch)
-  call torch_delete(XB_torch)
-  call torch_delete(dSIC_torch)
-  call torch_delete(dCN_torch)
-
   do j=js,je ; do i=is,ie
      iT = i-CNN%CNN_halo_size
      jT = j-CNN%CNN_halo_size
      do k=1,ncat
         if (G%mask2dT(i,j) == 0.0) then !is land
            IST%dCN(i,j,k) = 0.0
-        else 
+        else
            IST%dCN(i,j,k) = real(dCN(1,k,iT,jT), kind(IST%dCN))/(432000.0/dt_slow) !432000 = 5 days.
         endif
-
         if (is_NaN(IST%dCN(i,j,k))) then
            IST%dCN(i,j,k) = 0.0
         endif
      enddo
   enddo; enddo
   call pass_var(IST%dCN, G%Domain)
+  call torch_delete(XA_torch)
+  call torch_delete(XB_torch)
+  call torch_delete(dSIC_torch)
+  call torch_delete(dCN_torch)
+  deallocate(XB)
+  deallocate(dSIC)
+  deallocate(dCN)
 
   !Update category concentrations & bound between 0 and 1
   !This part checks if the updated SIC in any category is below zero.
