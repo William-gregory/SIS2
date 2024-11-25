@@ -70,7 +70,7 @@ use SIS_transport, only : adjust_ice_categories, SIS_transport_CS
 use SIS_tracer_flow_control, only : SIS_tracer_flow_control_CS
 use SIS_tracer_registry, only : SIS_unpack_passive_ice_tr, SIS_repack_passive_ice_tr
 use SIS_tracer_registry, only : SIS_count_passive_tracers
-use SIS_G23_CNN,       only : CNN_CS,CNN_init,CNN_inference !WG
+use SIS_G23_CNN,       only : CNN_CS,CNN_init,CNN_inference,CNN_final !WG
 
 implicit none ; private
 
@@ -1550,6 +1550,7 @@ subroutine SIS_slow_thermo_end (CS)
                                         !! that is deallocated here
 
   call SIS2_ice_thm_end(CS%ice_thm_CSp)
+  if (CS%use_G23_CNN) call CNN_final !WG
 
   if (associated(CS)) deallocate(CS)
 

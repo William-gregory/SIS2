@@ -10,7 +10,6 @@ use MOM_domains,               only : clone_MOM_domain,MOM_domain_type
 use MOM_domains,               only : pass_var, pass_vector, CGRID_NE
 use SIS_diag_mediator,         only : SIS_diag_ctrl
 use SIS2_ice_thm,              only : get_SIS2_thermo_coefs
-use SIS_utils,                 only : is_NaN
 use SIS_types,                 only : ice_state_type, ocean_sfc_state_type, fast_ice_avg_type, ice_ocean_flux_type
 use MOM_diag_mediator,         only : time_type
 use MOM_file_parser,           only : get_param, param_file_type
@@ -44,7 +43,7 @@ implicit none; private
 #  define SZJBW_(G) G%jsdw-1:G%jedw
 #endif
 
-public :: CNN_init,CNN_inference
+public :: CNN_init,CNN_inference,CNN_final
 
 !> Control structure for CNN
 type, public :: CNN_CS ; private
@@ -54,8 +53,8 @@ type, public :: CNN_CS ; private
   integer :: jsdw !< The lower j-memory limit for the wide halo arrays.
   integer :: jedw !< The upper j-memory limit for the wide halo arrays.
   integer :: CNN_halo_size  !< Halo size at each side of subdomains
-  real    :: piston_SSTadj !< piston velocity of SST restoring
   character(len=300)  :: CNN_script !< TorchScript
+  real    :: piston_SSTadj !< piston velocity of SST restoring
 
   type(SIS_diag_ctrl), pointer :: diag => NULL() !< A type that regulates diagnostics output
   !>@{ Diagnostic handles
@@ -63,6 +62,10 @@ type, public :: CNN_CS ; private
   !>@}
   
 end type CNN_CS
+
+type(torch_model) :: model_ftorch !ftorch
+type(torch_tensor), dimension(1) :: X_torch      !< input array to network passed to PyTorch
+type(torch_tensor), dimension(1) :: dCN_torch    !< network predictions of category SIC corrections
 
 contains
 
@@ -92,7 +95,8 @@ subroutine CNN_init(Time,G,param_file,diag,CS)
     call get_param(param_file, mdl, "CNN_SCRIPT", CS%CNN_script, &
       "TorchScript of Network with optimized weights", &
       default="/gpfs/f5/scratch/gfdl_o/William.Gregory/FTorch/Torchscripts/NetAB_script.pt")
-  
+
+  call torch_model_load(model_ftorch, CS%CNN_script)
   wd_halos(1) = CS%CNN_halo_size
   wd_halos(2) = CS%CNN_halo_size
   if (G%symmetric) then
@@ -153,12 +157,8 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CNN, dt_slow)
   real, dimension(SZI_(G),SZJ_(G),0:5) &
                                    :: posterior  !< updated part_size (bounded between 0 and 1)
 
-  type(torch_model) :: model_ftorch !ftorch
-  type(torch_tensor), dimension(1) :: X_torch      !< input array to network passed to PyTorch
-  type(torch_tensor), dimension(1) :: dCN_torch    !< network predictions of category SIC corrections
-
   integer :: in_layout(4) = [1,2,3,4]
-  integer :: out_layout(3) = [3,4,2]
+  integer :: out_layout(3) = [1,2,3]
   
   integer :: i, j, k, m, iT, jT
   integer :: is, ie, js, je, ncat, nlay
@@ -267,37 +267,19 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CNN, dt_slow)
         X(1,13,i,j) = (WH_CN5(i,j) - cn5_mu)/cn5_std
         X(1,14,i,j) = WH_mask(i,j)
      endif
-
-     do k=1,SIZE(X,2)
-        if (is_NaN(real(X(1,k,i,j),kind(IST%dCN)))) then
-           X(1,k,i,j) = 0.0
-        endif
-     enddo
   enddo ; enddo
   
   dCN(:,:,:) = 0.0
   !Load PyTorch model for dCN predictions
-  call torch_model_load(model_ftorch, CNN%CNN_script)
   call torch_tensor_from_array(X_torch(1), X, in_layout, torch_kCPU)
   call torch_tensor_from_array(dCN_torch(1), dCN, out_layout, torch_kCPU)
   call torch_model_forward(model_ftorch, X_torch, dCN_torch)
   
   do j=js,je ; do i=is,ie
      do k=1,ncat
-        if (G%mask2dT(i,j) == 0.0) then !is land
-           IST%dCN(i,j,k) = 0.0
-        else
-           IST%dCN(i,j,k) = dCN(i,j,k)!/(432000.0/dt_slow) !432000 = 5 days.
-        endif
-        if (is_NaN(IST%dCN(i,j,k))) then
-           IST%dCN(i,j,k) = 0.0
-        endif
+        IST%dCN(i,j,k) = dCN(i,j,k)/(432000.0/dt_slow) !432000 = 5 days.
      enddo
   enddo; enddo
-
-  call torch_delete(model_ftorch)
-  call torch_delete(X_torch)
-  call torch_delete(dCN_torch)
 
   !Update category concentrations & bound between 0 and 1
   !This part checks if the updated SIC in any category is below zero.
@@ -387,6 +369,14 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CNN, dt_slow)
  enddo; enddo
 
 end subroutine CNN_inference
+
+subroutine CNN_final()
+    ! Cleanup
+    call torch_delete(X_torch)
+    call torch_delete(dCN_torch)
+    call torch_delete(model_ftorch)
+end subroutine CNN_final
+
 
 ! update sea ice variables as done in DA:
 ! /ncrc/home1/Yongfei.Zhang/dart_manhattan/models/sis/dart_to_sis.f90
