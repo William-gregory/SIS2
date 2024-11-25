@@ -270,17 +270,11 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CNN, dt_slow)
   enddo ; enddo
   
   dCN(:,:,:) = 0.0
-  !Load PyTorch model for dCN predictions
+  !Load PyTorch tensors and do CNN inference
   call torch_tensor_from_array(X_torch(1), X, in_layout, torch_kCPU)
   call torch_tensor_from_array(dCN_torch(1), dCN, out_layout, torch_kCPU)
   call torch_model_forward(model_ftorch, X_torch, dCN_torch)
   
-  do j=js,je ; do i=is,ie
-     do k=1,ncat
-        IST%dCN(i,j,k) = dCN(i,j,k)/(432000.0/dt_slow) !432000 = 5 days.
-     enddo
-  enddo; enddo
-
   !Update category concentrations & bound between 0 and 1
   !This part checks if the updated SIC in any category is below zero.
   !If it is, spread the equivalent negative value across the other positive categories
@@ -290,6 +284,7 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CNN, dt_slow)
   posterior = 0.0
   do j=js,je ; do i=is,ie
      do k=1,ncat
+        IST%dCN(i,j,k) = dCN(i,j,k)/(432000.0/dt_slow) !432000 = 5 days.
         posterior(i,j,k) = IST%part_size(i,j,k) + IST%dCN(i,j,k)
      enddo
      do
