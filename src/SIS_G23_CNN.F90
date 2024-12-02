@@ -140,9 +140,19 @@ subroutine CNN_forward(IN, OUT, weights1, weights2, weights3, weights4, CNN)
   real, dimension(:,:,:), allocatable :: tmp3
   
   integer :: i, j, x, y, z, u, v, isdw, iedw, jsdw, jedw
+  integer :: jsd1, jsd2, jsd3, jsd4, jed1, jed2, jed3, jed4
+  integer :: isd1, isd2, isd3, isd4, ied1, ied2, ied3, ied4
   integer :: x1, x2, x3, y1, y2, y3
   
   isdw = CNN%isdw; iedw = CNN%iedw; jsdw = CNN%jsdw; jedw = CNN%jedw
+  jsd1 = jsdw + 1 ; jed1 = jedw - 1
+  jsd2 = jsdw + 2 ; jed2 = jedw - 2
+  jsd3 = jsdw + 3 ; jed3 = jedw - 3
+  jsd4 = jsdw + 4 ; jed4 = jedw - 4
+  isd1 = isdw + 1 ; ied1 = iedw - 1
+  isd2 = isdw + 2 ; ied2 = iedw - 2
+  isd3 = isdw + 3 ; ied3 = iedw - 3
+  isd4 = isdw + 4 ; ied4 = iedw - 4
   x1 = SIZE(IN,2) - 2 ; y1 = SIZE(IN,3) - 2
   x2 = SIZE(IN,2) - 4 ; y2 = SIZE(IN,3) - 4
   x3 = SIZE(IN,2) - 6 ; y3 = SIZE(IN,3) - 6
@@ -154,7 +164,7 @@ subroutine CNN_forward(IN, OUT, weights1, weights2, weights3, weights4, CNN)
   tmp1 = 0.0
   tmp2 = 0.0
   tmp3 = 0.0
-  do j=jsdw+1,jedw-1 ; do i=isdw+1,iedw-1
+  do j=jsd1,jed1 ; do i=isd1,ied1
      z = 1
      do x=1,SIZE(IN,1)
         do y=1,32
@@ -167,7 +177,7 @@ subroutine CNN_forward(IN, OUT, weights1, weights2, weights3, weights4, CNN)
         enddo
      enddo
   enddo; enddo
-  do j=jsdw+2,jedw-2 ; do i=isdw+2,iedw-2
+  do j=jsd2,jed2 ; do i=isd2,ied2
      z = 1
      do x=1,32
         do y=1,64
@@ -180,7 +190,7 @@ subroutine CNN_forward(IN, OUT, weights1, weights2, weights3, weights4, CNN)
         enddo
      enddo
   enddo; enddo
-  do j=jsdw+3,jedw-3 ; do i=isdw+3,iedw-3
+  do j=jsd3,jed3 ; do i=isd3,ied3
      z = 1
      do x=1,64
         do y=1,128
@@ -193,7 +203,7 @@ subroutine CNN_forward(IN, OUT, weights1, weights2, weights3, weights4, CNN)
         enddo
      enddo
   enddo; enddo
-  do j=jsdw+4,jedw-4 ; do i=isdw+4,iedw-4
+  do j=jsd4,jed4 ; do i=isd4,ied4
      z = 1
      do x=1,128
         do y=1,SIZE(OUT,1)
@@ -207,7 +217,7 @@ subroutine CNN_forward(IN, OUT, weights1, weights2, weights3, weights4, CNN)
      enddo
   enddo; enddo
 
-  do j=jsdw+4,jedw-4 ; do i=isdw+4,iedw-4
+  do j=jsd4,jed4 ; do i=isd4,ied4
      do y=1,SIZE(OUT,1)
         if (is_NaN(OUT(y,i-4,j-4))) then
            OUT(y,i-4,j-4) = 0.0
