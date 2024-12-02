@@ -1550,7 +1550,7 @@ subroutine SIS_slow_thermo_end (CS)
                                         !! that is deallocated here
 
   call SIS2_ice_thm_end(CS%ice_thm_CSp)
-  if (CS%use_G23_CNN) call CNN_final !WG
+  if (CS%use_G23_CNN) call CNN_final(CS%CNN) !WG
 
   if (associated(CS)) deallocate(CS)
 
