@@ -54,14 +54,14 @@ type, public :: CNN_CS ; private
   integer :: jedw !< The upper j-memory limit for the wide halo arrays.
   integer :: CNN_halo_size  !< Halo size at each side of subdomains
   real    :: piston_SSTadj !< piston velocity of SST restoring
-  real, dimension(2304)  :: netA_weight_vec1 !< 3 x 3 x 8 x 32
-  real, dimension(18432) :: netA_weight_vec2 !< 3 x 3 x 32 x 64
-  real, dimension(73728) :: netA_weight_vec3 !< 3 x 3 x 64 x 128
-  real, dimension(1152)  :: netA_weight_vec4 !< 3 x 3 x 128 x 1
-  real, dimension(224)   :: netB_weight_vec1 !< 1 x 1 x 7 x 32
-  real, dimension(2048)  :: netB_weight_vec2 !< 1 x 1 x 32 x 64
-  real, dimension(8192)  :: netB_weight_vec3 !< 1 x 1 x 64 x 128
-  real, dimension(640)   :: netB_weight_vec4 !< 1 x 1 x 128 x 5
+  real, dimension(2304)  :: netA_weight_vec1 !< 8 x 32 x 3 x3
+  real, dimension(18432) :: netA_weight_vec2 !< 32 x 64 x 3 x3
+  real, dimension(73728) :: netA_weight_vec3 !< 64 x 128 x 3 x 3
+  real, dimension(1152)  :: netA_weight_vec4 !< 128 x 1 x 3 x 3
+  real, dimension(224)   :: netB_weight_vec1 !< 7 x 32
+  real, dimension(2048)  :: netB_weight_vec2 !< 32 x 64
+  real, dimension(8192)  :: netB_weight_vec3 !< 64 x 128
+  real, dimension(640)   :: netB_weight_vec4 !< 128 x 5
 
   character(len=102)  :: netA_weights !< filename of CNN weights
   character(len=102)  :: netB_weights !< filename of ANN weights
@@ -127,107 +127,82 @@ subroutine CNN_init(Time,G,param_file,diag,CS)
 
 end subroutine CNN_init
 
-subroutine CNN_forward(IN, OUT, weights1, weights2, weights3, weights4, CNN)
+subroutine CNN_forward(IN, OUT, weights1, weights2, weights3, weights4, G)
   real, dimension(:,:,:), intent(in) :: IN
-  real, dimension(:,:,:), intent(inout) :: OUT
+  real, dimension(:,:), intent(inout) :: OUT
   real, dimension(:), intent(in) :: weights1
   real, dimension(:), intent(in) :: weights2
   real, dimension(:), intent(in) :: weights3
   real, dimension(:), intent(in) :: weights4
-  type(CNN_CS), intent(in) :: CNN
-  real, dimension(:,:,:), allocatable :: tmp1
-  real, dimension(:,:,:), allocatable :: tmp2
-  real, dimension(:,:,:), allocatable :: tmp3
+  type(SIS_hor_grid_type), intent(in) :: G
   
-  integer :: i, j, x, y, z, u, v, isdw, iedw, jsdw, jedw
-  integer :: jsd1, jsd2, jsd3, jsd4, jed1, jed2, jed3, jed4
-  integer :: isd1, isd2, isd3, isd4, ied1, ied2, ied3, ied4
-  integer :: x1, x2, x3, y1, y2, y3
+  real, dimension(32,7,7) :: tmp1
+  real, dimension(64,5,5) :: tmp2
+  real, dimension(128,3,3) :: tmp3
+  integer :: i, j, x, y, z, u, v, m, n, is, ie, js, je
+
+  is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec
   
-  isdw = CNN%isdw; iedw = CNN%iedw; jsdw = CNN%jsdw; jedw = CNN%jedw
-  jsd1 = jsdw + 1 ; jed1 = jedw - 1
-  jsd2 = jsdw + 2 ; jed2 = jedw - 2
-  jsd3 = jsdw + 3 ; jed3 = jedw - 3
-  jsd4 = jsdw + 4 ; jed4 = jedw - 4
-  isd1 = isdw + 1 ; ied1 = iedw - 1
-  isd2 = isdw + 2 ; ied2 = iedw - 2
-  isd3 = isdw + 3 ; ied3 = iedw - 3
-  isd4 = isdw + 4 ; ied4 = iedw - 4
-  x1 = SIZE(IN,2) - 2 ; y1 = SIZE(IN,3) - 2
-  x2 = SIZE(IN,2) - 4 ; y2 = SIZE(IN,3) - 4
-  x3 = SIZE(IN,2) - 6 ; y3 = SIZE(IN,3) - 6
-  allocate(tmp1(32,x1,y1))
-  allocate(tmp2(64,x2,y2))
-  allocate(tmp3(128,x3,y3))
-  
-  OUT = 0.0
-  tmp1 = 0.0
-  tmp2 = 0.0
-  tmp3 = 0.0
-  do j=jsd1,jed1 ; do i=isd1,ied1
-     z = 1
-     do x=1,SIZE(IN,1)
-        do y=1,32
-           do u=-1,1
-              do v=-1,1 
-                 tmp1(y,i-1,j-1) = tmp1(y,i-1,j-1) + IN(x,i+u,j+v)*weights1(z)
-                 z = z + 1
+  do j=js,je ; do i=is,ie
+     tmp1 = 0.0 ; tmp2 = 0.0 ; tmp3 = 0.0
+     do m=-3,3 
+        do n=-3,3
+           z = 1
+           do x=1,SIZE(IN,1)
+              do y=1,32
+                 do u=-1,1
+                    do v=-1,1
+                       tmp1(y,m+4,n+4) = tmp1(y,m+4,n+4) + IN(x,i+m+u,j+n+v)*weights1(z)
+                       z = z + 1
+                    enddo
+                 enddo
               enddo
            enddo
         enddo
      enddo
-  enddo; enddo
-  do j=jsd2,jed2 ; do i=isd2,ied2
-     z = 1
-     do x=1,32
-        do y=1,64
-           do u=-1,1
-              do v=-1,1
-                 tmp2(y,i-2,j-2) = tmp2(y,i-2,j-2) + max(0.0,tmp1(x,i-1+u,j-1+v))*weights2(z)
-                 z = z + 1
+     do m=-2,2
+        do n=-2,2
+           z = 1
+           do x=1,32
+              do y=1,64
+                 do u=-1,1
+                    do v=-1,1
+                       tmp2(y,m+3,n+3) = tmp2(y,m+3,n+3) + max(0.0,tmp1(x,m+4+u,n+4+v))*weights2(z)
+                       z = z + 1
+                    enddo
+                 enddo
               enddo
            enddo
         enddo
      enddo
-  enddo; enddo
-  do j=jsd3,jed3 ; do i=isd3,ied3
-     z = 1
-     do x=1,64
-        do y=1,128
-           do u=-1,1
-              do v=-1,1
-                 tmp3(y,i-3,j-3) = tmp3(y,i-3,j-3) + max(0.0,tmp2(x,i-2+u,j-2+v))*weights3(z)
-                 z = z + 1
+     do m=-1,1
+        do n=-1,1
+           z = 1
+           do x=1,64
+              do y=1,128
+                 do u=-1,1
+                    do v=-1,1
+                       tmp3(y,m+2,n+2) = tmp3(y,m+2,n+2) + max(0.0,tmp2(x,m+3+u,n+3+v))*weights3(z)
+                       z = z + 1
+                    enddo
+                 enddo
               enddo
            enddo
         enddo
      enddo
-  enddo; enddo
-  do j=jsd4,jed4 ; do i=isd4,ied4
      z = 1
      do x=1,128
-        do y=1,SIZE(OUT,1)
-           do u=-1,1
-              do v=-1,1
-                 OUT(y,i-4,j-4) = OUT(y,i-4,j-4) + max(0.0,tmp3(x,i-3+u,j-3+v))*weights4(z)
-                 z = z + 1
-              enddo
+        do u=1,3
+           do v=1,3
+              OUT(i,j) = OUT(i,j) + max(0.0,tmp3(x,u,v))*weights4(z)
+              z = z + 1
            enddo
         enddo
      enddo
+     if (is_NaN(OUT(i,j))) then
+        OUT(i,j) = 0.0
+     endif
   enddo; enddo
-
-  do j=jsd4,jed4 ; do i=isd4,ied4
-     do y=1,SIZE(OUT,1)
-        if (is_NaN(OUT(y,i-4,j-4))) then
-           OUT(y,i-4,j-4) = 0.0
-        endif
-     enddo
-  enddo; enddo
-
-  deallocate(tmp1)
-  deallocate(tmp2)
-  deallocate(tmp3)
   
 end subroutine CNN_forward
 
@@ -247,10 +222,9 @@ subroutine ANN_forward(IN, OUT, weights1, weights2, weights3, weights4, G)
   
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec
   
-  OUT = 0.0
   do j=js,je ; do i=is,ie
      z = 1
-     tmp1(:) = 0.0 ; tmp2(:) = 0.0 ; tmp3(:) = 0.0
+     tmp1 = 0.0 ; tmp2 = 0.0 ; tmp3 = 0.0
      do x=1,SIZE(IN,1)
         do y=1,32
            tmp1(y) = tmp1(y) + IN(x,i,j)*weights1(z)
@@ -319,13 +293,13 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CNN, dt_slow)
                                    ::  WH_mask   !< land-sea mask (0=land cells, 1=ocean cells)
   real, dimension(8,SZIW_(CNN),SZJW_(CNN)) &
                                    ::  XA        !< input variables to network A (predict dsiconc)
-  real, dimension(:,:,:), allocatable  &
+  real, dimension(7,SZI_(G),SZJ_(G)) &
                                    ::  XB        !< input variables to network B (predict dCN)
 
   !initialise network outputs
-  real, dimension(:,:,:), allocatable &
+  real, dimension(SZI_(G),SZJ_(G)) &
                                    :: dSIC        !< network A predictions of aggregate SIC corrections
-  real, dimension(:,:,:), allocatable &
+  real, dimension(5,SZI_(G),SZJ_(G)) &
                                    :: dCN         !< network B predictions of category SIC corrections
   real, dimension(SZI_(G),SZJ_(G),0:5) &
                                    :: posterior   !< updated part_size (bounded between 0 and 1)
@@ -336,7 +310,6 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CNN, dt_slow)
   real    :: cvr, Ti, qi_new, sic_inc
   real    :: rho_ice, Cp_water
   real    :: dists, positives
-  integer :: dimX, dimY
 
   real :: hmid(5) = [0.05,0.2,0.5,0.9,2.0] !ITD thicknesses for new ice
   logical, dimension(5) :: negatives
@@ -374,12 +347,6 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CNN, dt_slow)
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; ncat = IG%CatIce ; nlay = IG%NkIce
   isdw = CNN%isdw; iedw = CNN%iedw; jsdw = CNN%jsdw; jedw = CNN%jedw
-  dimX = SIZE(XA,2) - 2*CNN%CNN_halo_size
-  dimY = SIZE(XA,3) - 2*CNN%CNN_halo_size
-  
-  allocate(XB(7,dimX,dimY))
-  allocate(dSIC(1,dimX,dimY))
-  allocate(dCN(ncat,dimX,dimY))
 
   call pass_vector(IST%u_ice_C, IST%v_ice_C, G%Domain, stagger=CGRID_NE)
   
@@ -430,20 +397,18 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CNN, dt_slow)
   enddo ; enddo
 
   dSIC = 0.0
-  call CNN_forward(XA, dSIC, CNN%netA_weight_vec1, CNN%netA_weight_vec2, CNN%netA_weight_vec3, CNN%netA_weight_vec4, CNN)
+  call CNN_forward(XA, dSIC, CNN%netA_weight_vec1, CNN%netA_weight_vec2, CNN%netA_weight_vec3, CNN%netA_weight_vec4, G)
   
   XB = 0.0
   do j=js,je ; do i=is,ie
-     iT = i-CNN%CNN_halo_size
-     jT = j-CNN%CNN_halo_size
      if (G%mask2dT(i,j) == 1.0) then !is ocean
-        XB(1,iT,jT) = (dSIC(1,iT,jT) - dsic_mu)/dsic_std
-        XB(2,iT,jT) = (IST%part_size(i,j,1) - cn1_mu)/cn1_std
-        XB(3,iT,jT) = (IST%part_size(i,j,2) - cn2_mu)/cn2_std
-        XB(4,iT,jT) = (IST%part_size(i,j,3) - cn3_mu)/cn3_std
-        XB(5,iT,jT) = (IST%part_size(i,j,4) - cn4_mu)/cn4_std
-        XB(6,iT,jT) = (IST%part_size(i,j,5) - cn5_mu)/cn5_std
-        XB(7,iT,jT) = G%mask2dT(i,j)
+        XB(1,i,j) = (dSIC(i,j) - dsic_mu)/dsic_std
+        XB(2,i,j) = (IST%part_size(i,j,1) - cn1_mu)/cn1_std
+        XB(3,i,j) = (IST%part_size(i,j,2) - cn2_mu)/cn2_std
+        XB(4,i,j) = (IST%part_size(i,j,3) - cn3_mu)/cn3_std
+        XB(5,i,j) = (IST%part_size(i,j,4) - cn4_mu)/cn4_std
+        XB(6,i,j) = (IST%part_size(i,j,5) - cn5_mu)/cn5_std
+        XB(7,i,j) = G%mask2dT(i,j)
      endif
   enddo; enddo
 
@@ -451,19 +416,99 @@ subroutine CNN_inference(IST, OSS, FIA, IOF, G, IG, CNN, dt_slow)
   call ANN_forward(XB, dCN, CNN%netB_weight_vec1, CNN%netB_weight_vec2, CNN%netB_weight_vec3, CNN%netB_weight_vec4, G)
 
   do j=js,je ; do i=is,ie
-     iT = i-CNN%CNN_halo_size
-     jT = j-CNN%CNN_halo_size
      do k=1,ncat
         if (G%mask2dT(i,j) == 1.0) then !is ocean
-           IST%dCN(i,j,k) = dCN(k,iT,jT)!/(432000.0/dt_slow) !432000 = 5 days.
+           IST%dCN(i,j,k) = dCN(k,i,j)/(432000.0/dt_slow) !432000 = 5 days.
         endif
      enddo
   enddo; enddo
 
-  deallocate(dCN)
-  deallocate(dSIC)
-  deallocate(XB)
-  !call pass_var(IST%dCN, G%Domain)
+  !Update category concentrations & bound between 0 and 1
+  !This part checks if the updated SIC in any category is below zero.
+  !If it is, spread the equivalent negative value across the other positive categories
+  !E.g if new SIC is [-0.2,0.1,0.2,0.3,0.4], then remove 0.2/4 from categories 2 through 5
+  !E.g if new SIC is [-0.2,-0.1,0.4,0.2,0.1], then remove 0.3/3 from categories 3 through 5
+  !This will continue in a 'while loop' until all categories are >= 0.
+  posterior = 0.0
+  do j=js,je ; do i=is,ie
+     do k=1,ncat
+        posterior(i,j,k) = IST%part_size(i,j,k) + IST%dCN(i,j,k)
+     enddo
+     do
+        negatives = (posterior(i,j,1:) < 0.0)
+        if (.not. any(negatives)) exit
+
+        dists = 0.0
+        positives = 0.0
+        do k=1,ncat
+           if (negatives(k)) then
+              dists = dists + abs(posterior(i,j,k))
+           elseif (posterior(i,j,k) > 0.0) then
+              positives = positives + 1.0
+           endif
+        enddo
+
+        do k=1,ncat
+           if (posterior(i,j,k) > 0.0) then
+              posterior(i,j,k) = posterior(i,j,k) - dists/positives
+           elseif (posterior(i,j,k) < 0.0) then
+              posterior(i,j,k) = 0.0
+           endif   
+        enddo
+     enddo
+     cvr = 0.0
+     do k=1,ncat
+        cvr = cvr + posterior(i,j,k)
+     enddo
+     if (cvr>1) then
+        do k=1,ncat
+           posterior(i,j,k) = posterior(i,j,k)/cvr
+        enddo
+     endif
+     cvr = 0.0
+     do k=1,ncat
+        cvr = cvr + posterior(i,j,k)
+     enddo
+     posterior(i,j,0) = 1 - cvr
+  enddo; enddo
+  
+  !update sea ice/ocean variables based on corrected sea ice state
+  Ti = min(liquidus_temperature_mush(Si_new/phi_init),-0.1)
+  qi_new = enthalpy_ice(Ti, Si_new)
+  do j=js,je ; do i=is,ie
+     cvr = 1 - posterior(i,j,0)
+     sic_inc = 0.0
+     do k=1,ncat
+        !have added ice to grid cell which was previously ice free
+        if (posterior(i,j,k)>0.0 .and. IST%part_size(i,j,k)<=0.0) then
+           IST%mH_ice(i,j,k) = hmid(k)*rho_ice
+           IST%mH_snow(i,j,k) = 0.0
+           IST%mH_pond(i,j,k) = 0.0
+           IST%enth_snow(i,j,k,1) = 0.0
+           do m=1,nlay
+              IST%enth_ice(i,j,k,m) = qi_new/rho_ice
+              IST%sal_ice(i,j,k,m) = Si_new
+           enddo
+        !have removed all sea in a grid cell
+        elseif (posterior(i,j,k)<=0.0 .and. IST%part_size(i,j,k)>0.0) then
+           IST%mH_ice(i,j,k) = 0.0
+           IST%mH_snow(i,j,k) = 0.0
+           IST%mH_pond(i,j,k) = 0.0
+           IST%enth_snow(i,j,k,1) = 0.0
+           do m=1,nlay
+              IST%enth_ice(i,j,k,m) = 0.0
+              IST%sal_ice(i,j,k,m) = 0.0
+           enddo
+        endif
+        IST%part_size(i,j,k) = posterior(i,j,k)
+        sic_inc = sic_inc + IST%dCN(i,j,k)
+     enddo
+     IST%part_size(i,j,0) = posterior(i,j,0)
+     !if (sic_inc > 0.0 .and. OSS%SST_C(i,j) > OSS%T_fr_ocn(i,j)) then
+     !   IOF%flux_sh_ocn_top(i,j) = IOF%flux_sh_ocn_top(i,j) - &
+     !        ((OSS%T_fr_ocn(i,j) - OSS%SST_C(i,j)) * (1035.0*Cp_water) * (CNN%piston_SSTadj/86400.0)) !1035 = reference density
+     !endif
+ enddo; enddo
 
 end subroutine CNN_inference
 
