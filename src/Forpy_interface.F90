@@ -89,9 +89,9 @@ subroutine forpy_run_python(IN_CNN, IN_ANN, CNN_weights, ANN_weights, dsic_mu, d
     call obj%destroy
     call args%destroy
     
-    out1 = 0.0
+    dCN = 0.0
     do i=1,size(out_for,3) ; do j=1,size(out_for,2) ; do k=1,size(out_for,1)
-       out1(i,j,k) = out_for(k,j,i)
+       dCN(i,j,k) = out_for(k,j,i)
     enddo; enddo; enddo
   
 end subroutine forpy_run_python 

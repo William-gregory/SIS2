@@ -109,11 +109,11 @@ subroutine ML_init(Time,G,param_file,diag,CS)
 
   call get_param(param_file, mdl, "CNN_WEIGHTS", CS%CNN_weights, &
       "Optimized weights for the CNN which predicts dSIC", &
-      default="/gpfs/f5/scratch/gfdl_o/William.Gregory/CNNForpy/NetworkA_weights_SPEAR.pt")
+      default="/gpfs/f5/scratch/gfdl_o/William.Gregory/Forpy/NetworkA_weights_SPEAR.pt")
 
   call get_param(param_file, mdl, "ANN_WEIGHTS", CS%ANN_weights, &
       "Optimized weights for the ANN which predicts dCN", &
-      default="/gpfs/f5/scratch/gfdl_o/William.Gregory/CNNForpy/NetworkA_weights_SPEAR.pt")
+      default="/gpfs/f5/scratch/gfdl_o/William.Gregory/Forpy/NetworkA_weights_SPEAR.pt")
   
   wd_halos(1) = CS%CNN_halo_size
   wd_halos(2) = CS%CNN_halo_size
