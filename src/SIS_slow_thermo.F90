@@ -70,7 +70,7 @@ use SIS_transport, only : adjust_ice_categories, SIS_transport_CS
 use SIS_tracer_flow_control, only : SIS_tracer_flow_control_CS
 use SIS_tracer_registry, only : SIS_unpack_passive_ice_tr, SIS_repack_passive_ice_tr
 use SIS_tracer_registry, only : SIS_count_passive_tracers
-use SIS_G23_CNN,       only : CNN_CS,CNN_init,CNN_inference,CNN_final !WG
+use SIS_ML,              only : ML_CS,ML_init,ML_inference,ML_final !WG
 
 implicit none ; private
 
@@ -143,8 +143,8 @@ type slow_thermo_CS ; private
                             !< A pointers to the control structures for a subsidiary module
 
   !!! WG !!!
-  type(CNN_CS)           :: CNN    !< Control structure for CNN
-  logical :: use_G23_CNN   !< If true, use a python script to update part_size
+  type(ML_CS) :: ML    !< Control structure for the ML model
+  logical     :: do_ML !< If true, perform ML-based bias correction
   !!! WG end !!!
   
   !>@{ Diagnostic IDs
@@ -463,8 +463,8 @@ subroutine slow_thermodynamics(IST, dt_slow, CS, OSS, FIA, XSF, IOF, G, IG)
 
   !  Other routines that do thermodynamic vertical processes should be added here
   !!! WG !!!
-  if (CS%use_G23_CNN) &       
-       call CNN_inference(IST, OSS, FIA, IOF, G, IG, CS%CNN, dt_slow)
+  if (CS%do_ML) &       
+       call ML_inference(IST, OSS, FIA, IOF, G, IG, CS%ML, dt_slow)
   !!! WG end !!!
 
   ! Do tracer column physics
@@ -776,8 +776,8 @@ subroutine SIS2_thermodynamics(IST, dt_slow, CS, OSS, FIA, IOF, G, IG)
   endif
 
   !!! WG !!!
-  !if (CS%use_G23_CNN) &       
-  !     call CNN_inference(IST, OSS, FIA, IOF, G, IG, CS%CNN, dt_slow)
+  !if (CS%do_ML) &       
+  !     call ML_inference(IST, OSS, FIA, IOF, G, IG, CS%ML, dt_slow)
   !!! WG end !!!
   
   call mpp_clock_end(iceClock6)
@@ -1511,9 +1511,9 @@ subroutine SIS_slow_thermo_init(Time, G, IG, param_file, diag, CS, tracer_flow_C
   endif
 
   !!! WG !!!
-  call get_param(param_file, mdl, "USE_G23_CNN", CS%use_G23_CNN, &
-  "Invoke a python script to update part_size.", default=.false.)
-  if (CS%use_G23_CNN) call CNN_init(Time, G, param_file, diag, CS%CNN)
+  call get_param(param_file, mdl, "DO_ML", CS%do_ML, &
+  "Perform machine learning based bias correction.", default=.false.)
+  if (CS%do_ML) call ML_init(Time, G, param_file, diag, CS%ML)
   !!! WG END !!!
 
   call SIS2_ice_thm_init(param_file, CS%ice_thm_CSp)
@@ -1550,9 +1550,9 @@ subroutine SIS_slow_thermo_end (CS)
                                         !! that is deallocated here
 
   call SIS2_ice_thm_end(CS%ice_thm_CSp)
-  if (CS%use_G23_CNN) call CNN_final(CS%CNN) !WG
 
   if (associated(CS)) deallocate(CS)
+  if (CS%do_ML) call ML_final(CS%ML) !WG
 
 end subroutine SIS_slow_thermo_end
 
