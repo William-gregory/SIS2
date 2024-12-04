@@ -123,8 +123,8 @@ subroutine ML_init(Time,G,param_file,diag,CS)
       "Torchscript for the ANN which predicts dCN", &
       default="/gpfs/f5/scratch/gfdl_o/William.Gregory/FTorch/Torchscripts/NetworkB_script.pt")
 
-  call torch_model_load(CS%CNN_model_ftorch, CS%CNN_script)
-  call torch_model_load(CS%ANN_model_ftorch, CS%ANN_script)
+  call torch_model_load(CS%CNN_model_ftorch, trim(CS%CNN_script))
+  call torch_model_load(CS%ANN_model_ftorch, trim(CS%ANN_script))
   
   wd_halos(1) = CS%CNN_halo_size
   wd_halos(2) = CS%CNN_halo_size
