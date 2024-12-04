@@ -85,8 +85,8 @@ type, public :: ML_CS ; private
   real, dimension(8192)  :: ANN_weight_vec3 !< 64 x 128
   real, dimension(640)   :: ANN_weight_vec4 !< 128 x 5
 
-  character(len=102)  :: CNN_weights !< filename of CNN weights netcdf file
-  character(len=102)  :: ANN_weights !< filename of ANN weights netcdf file
+  character(len=300)  :: CNN_weights !< filename of CNN weights netcdf file
+  character(len=300)  :: ANN_weights !< filename of ANN weights netcdf file
   
   type(SIS_diag_ctrl), pointer :: diag => NULL() !< A type that regulates diagnostics output
   !>@{ Diagnostic handles
@@ -129,14 +129,14 @@ subroutine ML_init(Time,G,param_file,diag,CS)
       "ANN optimized weights", &
       default="/gpfs/f5/scratch/gfdl_o/William.Gregory/FTorch/weights/NetworkB_weights.nc")
 
-  call MOM_read_data(filename=CS%CNN_weights, fieldname="C1", data=CS%CNN_weight_vec1)
-  call MOM_read_data(filename=CS%CNN_weights, fieldname="C2", data=CS%CNN_weight_vec2)
-  call MOM_read_data(filename=CS%CNN_weights, fieldname="C3", data=CS%CNN_weight_vec3)
-  call MOM_read_data(filename=CS%CNN_weights, fieldname="C4", data=CS%CNN_weight_vec4)
-  call MOM_read_data(filename=CS%ANN_weights, fieldname="C1", data=CS%ANN_weight_vec1)
-  call MOM_read_data(filename=CS%ANN_weights, fieldname="C2", data=CS%ANN_weight_vec2)
-  call MOM_read_data(filename=CS%ANN_weights, fieldname="C3", data=CS%ANN_weight_vec3)
-  call MOM_read_data(filename=CS%ANN_weights, fieldname="C4", data=CS%ANN_weight_vec4)
+  call MOM_read_data(filename=trim(CS%CNN_weights), fieldname="C1", data=CS%CNN_weight_vec1)
+  call MOM_read_data(filename=trim(CS%CNN_weights), fieldname="C2", data=CS%CNN_weight_vec2)
+  call MOM_read_data(filename=trim(CS%CNN_weights), fieldname="C3", data=CS%CNN_weight_vec3)
+  call MOM_read_data(filename=trim(CS%CNN_weights), fieldname="C4", data=CS%CNN_weight_vec4)
+  call MOM_read_data(filename=trim(CS%ANN_weights), fieldname="C1", data=CS%ANN_weight_vec1)
+  call MOM_read_data(filename=trim(CS%ANN_weights), fieldname="C2", data=CS%ANN_weight_vec2)
+  call MOM_read_data(filename=trim(CS%ANN_weights), fieldname="C3", data=CS%ANN_weight_vec3)
+  call MOM_read_data(filename=trim(CS%ANN_weights), fieldname="C4", data=CS%ANN_weight_vec4)
   
   wd_halos(1) = CS%CNN_halo_size
   wd_halos(2) = CS%CNN_halo_size
