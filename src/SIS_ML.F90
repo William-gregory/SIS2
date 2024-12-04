@@ -168,7 +168,7 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, CS, ML, dt_slow)
   real, dimension(6,SZI_(G),SZJ_(G)) &
                                    ::  IN_ANN    !< input variables to ANN (predict dCN)
 
-  real, dimension(5,SZI_(G),SZJ_(G)) &
+  real, dimension(SZI_(G),SZJ_(G),5) &
                                    :: dCN        !< ANN predictions of category SIC corrections
   real, dimension(SZI_(G),SZJ_(G),0:5) &
                                    :: posterior  !< updated part_size (bounded between 0 and 1)
