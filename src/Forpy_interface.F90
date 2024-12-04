@@ -1,6 +1,5 @@
 module Forpy_interface
 
-!use MOM_coms,                  only : PE_here,num_PEs
 use forpy_mod,                 only : module_py,list,ndarray,object,tuple
 use forpy_mod,                 only : err_print
 use forpy_mod,                 only : forpy_initialize,get_sys_path,import_py,print_py
@@ -38,45 +37,40 @@ subroutine forpy_run_python_init(CS,python_dir,python_file)
 end subroutine forpy_run_python_init
 
 !> !> Send variables to a python script and output the results
-subroutine forpy_run_python(in1, in2, in3, in4, in5, in6, out1, CS, dt_slow)
-    type(python_interface),        intent(in)  :: CS     !< Python interface object
-    real, dimension(:,:,:), &
-         intent(in) :: in1     ! input variables (Network A).
-    real, dimension(:,:,:), &
-         intent(in) :: in2     ! input variables (Network B).
-    character(len=*), intent(in) :: in3
-    character(len=*), intent(in) :: in4
-    character(len=*), intent(in) :: in5
-    character(len=*), intent(in) :: in6
-    real, dimension(:,:,:), &
-         intent(inout) :: out1      ! output variables.
-    real, intent(in)   :: dt_slow !< The thermodynamic time step [T ~> s]
+subroutine forpy_run_python(IN_CNN, IN_ANN, CNN_weights, ANN_weights, dsic_mu, dsic_std, dCN, CS)
+    real, dimension(:,:,:), intent(in) :: IN_CNN       !< matrix of input states to CNN
+    real, dimension(:,:,:), intent(in) :: IN_ANN       !< matrix of input states to ANN
+    character(len=*),       intent(in) :: CNN_weights  !< filename of Torch weights for CNN
+    character(len=*),       intent(in) :: ANN_weights  !< filename of Torch weights for ANN
+    real,                   intent(in) :: dsic_mu      !< normalization mean for CNN output
+    real,                   intent(in) :: dsic_std     !< normalization standard dev. for CNN output
+    real, dimension(:,:,:), intent(inout) :: dCN       !< ANN predictions of dCN
+    type(python_interface), intent(in) :: CS           !< Python interface object
     
     ! Local Variables for Forpy
-    integer :: ierror ! return code from python interfaces
-    type(ndarray) :: in1_py,in2_py,out_arr         !< variables in the form of numpy array
-    type(object)  :: obj                    !< return objects
-    type(tuple)   :: args                   !< input arguments for the Python module
+    integer       :: ierror                     !< return code from python interfaces
+    type(ndarray) :: in1_py,in2_py,out_arr      !< variables in the form of numpy array
+    type(object)  :: obj                        !< return objects
+    type(tuple)   :: args                       !< input arguments for the Python module
     real, dimension(:,:,:), pointer :: out_for  !< outputs from Python module
     integer :: hi, hj ! temporary
     integer :: i, j, k
 
     ! Covert input into Forpy Numpy Arrays 
-    ierror = ndarray_create(in1_py, in1)
+    ierror = ndarray_create(in1_py, IN_CNN)
     if (ierror/=0) then; call err_print; endif
-    ierror = ndarray_create(in2_py, in2)
+    ierror = ndarray_create(in2_py, IN_ANN)
     if (ierror/=0) then; call err_print; endif
 
     ! Create Python Argument 
-    ierror = tuple_create(args,7)
+    ierror = tuple_create(args,6)
     if (ierror/=0) then; call err_print; endif
     ierror = args%setitem(0,in1_py)
     ierror = args%setitem(1,in2_py)
-    ierror = args%setitem(2,in3)
-    ierror = args%setitem(3,in4)
-    ierror = args%setitem(4,in5)
-    ierror = args%setitem(5,in6)
-    ierror = args%setitem(6,dt_slow)
+    ierror = args%setitem(2,CNN_weights)
+    ierror = args%setitem(3,ANN_weights)
+    ierror = args%setitem(4,dsic_mu)
+    ierror = args%setitem(5,dsic_std)
 
     if (ierror/=0) then; call err_print; endif
     
