@@ -289,7 +289,7 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, CS, ML, dt_slow)
   
   ! Run Python script for CNN inference
   dCN = 0.0
-  call forpy_run_python(IN_CNN, IN_ANN, ML%CNN_weights, ML%ANN_weights, dsic_mu, dsic_std, dCN, CS)
+  call forpy_run_python(IN_CNN, IN_ANN, trim(ML%CNN_weights), trim(ML%ANN_weights), dsic_mu, dsic_std, dCN, CS)
 
   do j=js,je ; do i=is,ie
      do k=1,ncat
