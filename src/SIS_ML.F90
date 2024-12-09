@@ -27,7 +27,7 @@ use MOM_domains,               only : clone_MOM_domain,MOM_domain_type
 use MOM_domains,               only : pass_var, pass_vector, CGRID_NE
 use SIS_diag_mediator,         only : SIS_diag_ctrl
 use SIS2_ice_thm,              only : get_SIS2_thermo_coefs
-use SIS_utils,                 only : is_NaN
+!use SIS_utils,                 only : is_NaN
 use SIS_types,                 only : ice_state_type, ocean_sfc_state_type, fast_ice_avg_type, ice_ocean_flux_type
 use MOM_diag_mediator,         only : time_type
 use MOM_file_parser,           only : get_param, param_file_type
@@ -76,8 +76,8 @@ type, public :: ML_CS ; private
   !< The network weights for both CNN and ANN were raveled into a single vector offline.
   !< See https://github.com/William-gregory/FTorch/tree/SIS2/weights/Torch_to_netcdf.py
   !< TO DO: Generalize code to take any size weight vectors (or matrices?)
-  real, dimension(2304)  :: CNN_weight_vec1 !< 8 x 32 x 3 x3
-  real, dimension(18432) :: CNN_weight_vec2 !< 32 x 64 x 3 x3
+  real, dimension(2304)  :: CNN_weight_vec1 !< 8 x 32 x 3 x 3
+  real, dimension(18432) :: CNN_weight_vec2 !< 32 x 64 x 3 x 3
   real, dimension(73728) :: CNN_weight_vec3 !< 64 x 128 x 3 x 3
   real, dimension(1152)  :: CNN_weight_vec4 !< 128 x 1 x 3 x 3
   real, dimension(224)   :: ANN_weight_vec1 !< 7 x 32
@@ -231,9 +231,9 @@ subroutine CNN_forward(IN, OUT, weights1, weights2, weights3, weights4, G)
            enddo
         enddo
      enddo
-     if (is_NaN(OUT(i,j))) then
-        OUT(i,j) = 0.0
-     endif
+     !if (is_NaN(OUT(i,j))) then
+     !   OUT(i,j) = 0.0
+     !endif
   enddo; enddo
   
 end subroutine CNN_forward
@@ -288,11 +288,11 @@ subroutine ANN_forward(IN, OUT, weights1, weights2, weights3, weights4, G)
            z = z + 1
         enddo
      enddo
-     do y=1,SIZE(OUT,1)
-        if (is_NaN(OUT(y,i,j))) then
-           OUT(y,i,j) = 0.0
-        endif
-     enddo
+     !do y=1,SIZE(OUT,1)
+     !   if (is_NaN(OUT(y,i,j))) then
+     !      OUT(y,i,j) = 0.0
+     !   endif
+     !enddo
   enddo; enddo
 
 end subroutine ANN_forward
@@ -524,7 +524,7 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
   enddo; enddo
   
   !update sea ice/ocean variables based on corrected sea ice state
-  Ti = min(liquidus_temperature_mush(Si_new/phi_init),-0.1)
+  Ti = min(liquidus_temperature_mush(Si_new/phi_init),-0.1) !-0.1 default
   qi_new = enthalpy_ice(Ti, Si_new)
   do j=js,je ; do i=is,ie
      cvr = 1 - posterior(i,j,0)
