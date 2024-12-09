@@ -359,8 +359,6 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
   real, parameter :: & 
        phi_init = 0.75, & !initial liquid fraction of frazil ice
        Si_new = 5.0    !salinity of mushy ice (ppt)
-
-  scale = dt_slow/432000.0 !Network was trained on 5-day (432000-second) increments
   
   !normalization statistics for both networks
   real, parameter :: &
@@ -399,6 +397,7 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
   call get_SIS2_thermo_coefs(IST%ITV, Cp_Water=Cp_water, rho_ice=rho_ice)
 
   irho_ice = 1/rho_ice
+  scale = dt_slow/432000.0 !Network was trained on 5-day (432000-second) increments
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; ncat = IG%CatIce ; nlay = IG%NkIce
   isdw = ML%isdw; iedw = ML%iedw; jsdw = ML%jsdw; jedw = ML%jedw
 
