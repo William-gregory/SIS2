@@ -348,8 +348,9 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
   integer :: is, ie, js, je, ncat, nlay
   integer :: isdw, iedw, jsdw, jedw
   real    :: cvr, Ti, qi_new, sic_inc
-  real    :: rho_ice, Cp_water
+  real    :: irho_ice, rho_ice, Cp_water
   real    :: dists, positives
+  real    :: scale
 
   real :: hmid(5) = [0.05,0.2,0.5,0.9,2.0] !ITD thicknesses for new ice
   logical, dimension(5) :: negatives
@@ -359,6 +360,8 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
        phi_init = 0.75, & !initial liquid fraction of frazil ice
        Si_new = 5.0    !salinity of mushy ice (ppt)
 
+  scale = dt_slow/432000.0 !Network was trained on 5-day (432000-second) increments
+  
   !normalization statistics for both networks
   real, parameter :: &
        !CNN stats
@@ -370,13 +373,13 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
        ts_mu = -4.948930143980626, &
        sss_mu = 29.957828794260223, &
 
-       sic_std = 0.417807432477912, &
-       sst_std = 5.185939952547236, &
-       ui_std = 0.1232413537698019, &
-       vi_std = 0.08554771683233311, &
-       hi_std = 0.6317367194187057, &
-       ts_std = 8.513001437482345, &
-       sss_std = 10.693023255523686, &
+       sic_std = 2.393447129624403, & !1/0.417807432477912
+       sst_std = 0.19282907421803425, & !1/5.185939952547236
+       ui_std = 8.114159487957785, & !1/0.1232413537698019
+       vi_std = 11.689382686389193, & !1/0.08554771683233311
+       hi_std = 1.5829379063483167, & !1/0.6317367194187057
+       ts_std = 0.117467382960497, & !1/8.513001437482345
+       sss_std = 0.09351892127265606, & !10.693023255523686
 
        !ANN stats
        dsic_mu = -0.0009238007032701131, &
@@ -386,15 +389,16 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
        cn4_mu = 0.05570272187413382, &
        cn5_mu = 0.13587840021452144, &
        
-       dsic_std = 0.03622488757495426, &
-       cn1_std = 0.05668652922708476, &
-       cn2_std = 0.12648644666321918, &
-       cn3_std = 0.2123464013448815, &
-       cn4_std = 0.1633845192717932, &
-       cn5_std = 0.30370125990558566
+       dsic_std = 27.605330670270895, & !1/0.03622488757495426
+       cn1_std = 17.64087541846187, & !1/0.05668652922708476
+       cn2_std = 7.905985395119718, & !1/0.12648644666321918
+       cn3_std = 4.709286306085565, & !1/0.2123464013448815
+       cn4_std = 6.120530907438551, & !1/0.1633845192717932
+       cn5_std = 3.292709422117244 !1/0.30370125990558566
 
   call get_SIS2_thermo_coefs(IST%ITV, Cp_Water=Cp_water, rho_ice=rho_ice)
 
+  irho_ice = 1/rho_ice
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; ncat = IG%CatIce ; nlay = IG%NkIce
   isdw = ML%isdw; iedw = ML%iedw; jsdw = ML%jsdw; jedw = ML%jedw
 
@@ -413,7 +417,7 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
      WH_SSS(i,j) = OSS%s_surf(i,j)
      WH_mask(i,j) = G%mask2dT(i,j)
      do k=1,ncat
-        WH_HI(i,j) = WH_HI(i,j) + IST%part_size(i,j,k)*(IST%mH_ice(i,j,k)/rho_ice)
+        WH_HI(i,j) = WH_HI(i,j) + IST%part_size(i,j,k)*(IST%mH_ice(i,j,k)*irho_ice)
      enddo
      if (cvr > 0.) then
         WH_HI(i,j) = WH_HI(i,j) / cvr
@@ -434,16 +438,14 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
   IN_CNN = 0.0
   ! Combine arrays for the CNN and normalize
   do j=jsdw,jedw ; do i=isdw,iedw
-     if (G%mask2dT(i,j) == 1.0) then !is ocean
-        IN_CNN(1,i,j) = (WH_SIC(i,j) - sic_mu)/sic_std
-        IN_CNN(2,i,j) = (WH_SST(i,j) - sst_mu)/sst_std
-        IN_CNN(3,i,j) = (WH_UI(i,j) - ui_mu)/ui_std
-        IN_CNN(4,i,j) = (WH_VI(i,j) - vi_mu)/vi_std
-        IN_CNN(5,i,j) = (WH_HI(i,j) - hi_mu)/hi_std
-        IN_CNN(6,i,j) = (WH_TS(i,j) - ts_mu)/ts_std
-        IN_CNN(7,i,j) = (WH_SSS(i,j) - sss_mu)/sss_std
-        IN_CNN(8,i,j) = WH_mask(i,j)
-     endif
+     IN_CNN(1,i,j) = WH_mask(i,j) * ((WH_SIC(i,j) - sic_mu)*sic_std)
+     IN_CNN(2,i,j) = WH_mask(i,j) * ((WH_SST(i,j) - sst_mu)*sst_std)
+     IN_CNN(3,i,j) = WH_mask(i,j) * ((WH_UI(i,j) - ui_mu)*ui_std)
+     IN_CNN(4,i,j) = WH_mask(i,j) * ((WH_VI(i,j) - vi_mu)*vi_std)
+     IN_CNN(5,i,j) = WH_mask(i,j) * ((WH_HI(i,j) - hi_mu)*hi_std)
+     IN_CNN(6,i,j) = WH_mask(i,j) * ((WH_TS(i,j) - ts_mu)*ts_std)
+     IN_CNN(7,i,j) = WH_mask(i,j) * ((WH_SSS(i,j) - sss_mu)*sss_std)
+     IN_CNN(8,i,j) = WH_mask(i,j)
   enddo ; enddo
 
   dSIC = 0.0
@@ -451,15 +453,13 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
   
   IN_ANN = 0.0
   do j=js,je ; do i=is,ie
-     if (G%mask2dT(i,j) == 1.0) then !is ocean
-        IN_ANN(1,i,j) = (dSIC(i,j) - dsic_mu)/dsic_std
-        IN_ANN(2,i,j) = (IST%part_size(i,j,1) - cn1_mu)/cn1_std
-        IN_ANN(3,i,j) = (IST%part_size(i,j,2) - cn2_mu)/cn2_std
-        IN_ANN(4,i,j) = (IST%part_size(i,j,3) - cn3_mu)/cn3_std
-        IN_ANN(5,i,j) = (IST%part_size(i,j,4) - cn4_mu)/cn4_std
-        IN_ANN(6,i,j) = (IST%part_size(i,j,5) - cn5_mu)/cn5_std
-        IN_ANN(7,i,j) = G%mask2dT(i,j)
-     endif
+     IN_ANN(1,i,j) = G%mask2dT(i,j) * ((dSIC(i,j) - dsic_mu)*dsic_std)
+     IN_ANN(2,i,j) = G%mask2dT(i,j) * ((IST%part_size(i,j,1) - cn1_mu)*cn1_std)
+     IN_ANN(3,i,j) = G%mask2dT(i,j) * ((IST%part_size(i,j,2) - cn2_mu)*cn2_std)
+     IN_ANN(4,i,j) = G%mask2dT(i,j) * ((IST%part_size(i,j,3) - cn3_mu)*cn3_std)
+     IN_ANN(5,i,j) = G%mask2dT(i,j) * ((IST%part_size(i,j,4) - cn4_mu)*cn4_std)
+     IN_ANN(6,i,j) = G%mask2dT(i,j) * ((IST%part_size(i,j,5) - cn5_mu)*cn5_std)
+     IN_ANN(7,i,j) = G%mask2dT(i,j)
   enddo; enddo
 
   dCN = 0.0
@@ -468,11 +468,9 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
   posterior = 0.0
   do j=js,je ; do i=is,ie
      do k=1,ncat
-        if (G%mask2dT(i,j) == 1.0) then !is ocean
-           !save predicted increment as a diagnostic
-           IST%dCN(i,j,k) = dCN(k,i,j)/(432000.0/dt_slow) !Network was trained on 5-day (432000-second) increments
-           posterior(i,j,k) = IST%part_size(i,j,k) + IST%dCN(i,j,k)
-        endif
+        !save predicted increment as a diagnostic
+        IST%dCN(i,j,k) = G%mask2dT(i,j) * (dCN(k,i,j)*scale)
+        posterior(i,j,k) = IST%part_size(i,j,k) + IST%dCN(i,j,k)
      enddo
   enddo; enddo
 
