@@ -465,11 +465,13 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
   dCN = 0.0
   call ANN_forward(IN_ANN, dCN, ML%ANN_weight_vec1, ML%ANN_weight_vec2, ML%ANN_weight_vec3, ML%ANN_weight_vec4, G)
 
+  posterior = 0.0
   do j=js,je ; do i=is,ie
      do k=1,ncat
         if (G%mask2dT(i,j) == 1.0) then !is ocean
            !save predicted increment as a diagnostic
            IST%dCN(i,j,k) = dCN(k,i,j)/(432000.0/dt_slow) !Network was trained on 5-day (432000-second) increments
+           posterior(i,j,k) = IST%part_size(i,j,k) + IST%dCN(i,j,k)
         endif
      enddo
   enddo; enddo
@@ -480,11 +482,7 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
   !E.g if new SIC is [-0.2,0.1,0.2,0.3,0.4], then remove 0.2/4 from categories 2 through 5
   !E.g if new SIC is [-0.2,-0.1,0.4,0.2,0.1], then remove 0.3/3 from categories 3 through 5
   !This will continue in a 'while loop' until all categories are >= 0.
-  posterior = 0.0
   do j=js,je ; do i=is,ie
-     do k=1,ncat
-        posterior(i,j,k) = IST%part_size(i,j,k) + IST%dCN(i,j,k)
-     enddo
      do
         negatives = (posterior(i,j,1:) < 0.0)
         if (.not. any(negatives)) exit
