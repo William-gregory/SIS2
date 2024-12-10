@@ -27,7 +27,6 @@ use MOM_domains,               only : clone_MOM_domain,MOM_domain_type
 use MOM_domains,               only : pass_var, pass_vector, CGRID_NE
 use SIS_diag_mediator,         only : SIS_diag_ctrl
 use SIS2_ice_thm,              only : get_SIS2_thermo_coefs
-!use SIS_utils,                 only : is_NaN
 use SIS_types,                 only : ice_state_type, ocean_sfc_state_type, fast_ice_avg_type, ice_ocean_flux_type
 use MOM_diag_mediator,         only : time_type
 use MOM_file_parser,           only : get_param, param_file_type
@@ -184,7 +183,7 @@ subroutine CNN_forward(IN, OUT, weights1, weights2, weights3, weights4, G)
               do y=1,32 !loop over the number of features in the first layer
                  do u=-1,1 !loop over convolution kernel in x-direction 
                     do v=-1,1 !loop over convolution kernel in y-direction
-                       tmp1(y,m+4,n+4) = tmp1(y,m+4,n+4) + IN(x,i+m+u,j+n+v)*weights1(z)
+                       tmp1(y,m+4,n+4) = tmp1(y,m+4,n+4) + (IN(x,i+m+u,j+n+v)*weights1(z))
                        z = z + 1
                     enddo
                  enddo
@@ -199,7 +198,7 @@ subroutine CNN_forward(IN, OUT, weights1, weights2, weights3, weights4, G)
               do y=1,64
                  do u=-1,1
                     do v=-1,1
-                       tmp2(y,m+3,n+3) = tmp2(y,m+3,n+3) + max(0.0,tmp1(x,m+4+u,n+4+v))*weights2(z)
+                       tmp2(y,m+3,n+3) = tmp2(y,m+3,n+3) + (max(0.0,tmp1(x,m+4+u,n+4+v))*weights2(z))
                        z = z + 1
                     enddo
                  enddo
@@ -214,7 +213,7 @@ subroutine CNN_forward(IN, OUT, weights1, weights2, weights3, weights4, G)
               do y=1,128
                  do u=-1,1
                     do v=-1,1
-                       tmp3(y,m+2,n+2) = tmp3(y,m+2,n+2) + max(0.0,tmp2(x,m+3+u,n+3+v))*weights3(z)
+                       tmp3(y,m+2,n+2) = tmp3(y,m+2,n+2) + (max(0.0,tmp2(x,m+3+u,n+3+v))*weights3(z))
                        z = z + 1
                     enddo
                  enddo
@@ -226,14 +225,11 @@ subroutine CNN_forward(IN, OUT, weights1, weights2, weights3, weights4, G)
      do x=1,128
         do u=1,3
            do v=1,3
-              OUT(i,j) = OUT(i,j) + max(0.0,tmp3(x,u,v))*weights4(z)
+              OUT(i,j) = OUT(i,j) + (max(0.0,tmp3(x,u,v))*weights4(z))
               z = z + 1
            enddo
         enddo
      enddo
-     !if (is_NaN(OUT(i,j))) then
-     !   OUT(i,j) = 0.0
-     !endif
   enddo; enddo
   
 end subroutine CNN_forward
@@ -263,36 +259,31 @@ subroutine ANN_forward(IN, OUT, weights1, weights2, weights3, weights4, G)
      tmp1 = 0.0 ; tmp2 = 0.0 ; tmp3 = 0.0
      do x=1,SIZE(IN,1)
         do y=1,32
-           tmp1(y) = tmp1(y) + IN(x,i,j)*weights1(z)
+           tmp1(y) = tmp1(y) + (IN(x,i,j)*weights1(z))
            z = z + 1
         enddo
      enddo
      z = 1
      do x=1,32
         do y=1,64
-           tmp2(y) = tmp2(y) + max(0.0,tmp1(x))*weights2(z)
+           tmp2(y) = tmp2(y) + (max(0.0,tmp1(x))*weights2(z))
            z = z + 1
         enddo
      enddo
      z = 1
      do x=1,64
         do y=1,128
-           tmp3(y) = tmp3(y) + max(0.0,tmp2(x))*weights3(z)
+           tmp3(y) = tmp3(y) + (max(0.0,tmp2(x))*weights3(z))
            z = z + 1
         enddo
      enddo
      z = 1
      do x=1,128
         do y=1,SIZE(OUT,1)
-           OUT(y,i,j) = OUT(y,i,j) + max(0.0,tmp3(x))*weights4(z)
+           OUT(y,i,j) = OUT(y,i,j) + (max(0.0,tmp3(x))*weights4(z))
            z = z + 1
         enddo
      enddo
-     !do y=1,SIZE(OUT,1)
-     !   if (is_NaN(OUT(y,i,j))) then
-     !      OUT(y,i,j) = 0.0
-     !   endif
-     !enddo
   enddo; enddo
 
 end subroutine ANN_forward
@@ -363,36 +354,36 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
   !normalization statistics for both networks
   real, parameter :: &
        !CNN stats
-       sic_mu = 0.2990368601723349, &
-       sst_mu = 2.352753789056461, &
-       ui_mu = 0.050851955768614523, &
-       vi_mu = 0.016421272164475663, &
-       hi_mu = 0.3624009110428704, &
-       ts_mu = -4.948930143980626, &
-       sss_mu = 29.957828794260223, &
+       sic_mu = 0.3027647350377699, & !0.2990368601723349, &
+       sst_mu = 2.3012412885221227, & !2.352753789056461, &
+       ui_mu = 0.05068449397438217, & !0.050851955768614523, &
+       vi_mu = 0.015560467054164891, & !0.016421272164475663, &
+       hi_mu = 0.37145763696496614, & !0.3624009110428704, &
+       ts_mu = -5.080523107658717, & !-4.948930143980626, &
+       sss_mu = 29.779400744733344, & !29.957828794260223, &
 
-       sic_std = 2.393447129624403, & !1/0.417807432477912
-       sst_std = 0.19282907421803425, & !1/5.185939952547236
-       ui_std = 8.114159487957785, & !1/0.1232413537698019
-       vi_std = 11.689382686389193, & !1/0.08554771683233311
-       hi_std = 1.5829379063483167, & !1/0.6317367194187057
-       ts_std = 0.117467382960497, & !1/8.513001437482345
-       sss_std = 0.09351892127265606, & !10.693023255523686
+       sic_std = 2.3805323101793143, & !2.393447129624403, & 
+       sst_std = 0.1965674889394199, & !0.19282907421803425, & 
+       ui_std = 8.009159885875313, & !8.114159487957785, & 
+       vi_std = 11.366748919661132, & !11.689382686389193, & 
+       hi_std = 1.561541177578264, & !1.5829379063483167, & 
+       ts_std = 0.11446496215312828, & !0.117467382960497, & 
+       sss_std = 0.09328509234648198, & !0.09351892127265606, & 
 
        !ANN stats
-       dsic_mu = -0.0009238007032701131, &
-       cn1_mu = 0.014416831050737924, &
-       cn2_mu = 0.04373226571477122, &
-       cn3_mu = 0.09164522823711764, &
-       cn4_mu = 0.05570272187413382, &
-       cn5_mu = 0.13587840021452144, &
+       dsic_mu = -0.0009532165189332168, & !-0.0009238007032701131, &
+       cn1_mu = 0.012551670710092408, & !0.014416831050737924, &
+       cn2_mu = 0.04230142619650296, & !0.04373226571477122, &
+       cn3_mu = 0.09323385427205945, & !0.09164522823711764, &
+       cn4_mu = 0.05745988754598311, & !0.05570272187413382, &
+       cn5_mu = 0.14054414562635656, & !0.13587840021452144, &
        
-       dsic_std = 27.605330670270895, & !1/0.03622488757495426
-       cn1_std = 17.64087541846187, & !1/0.05668652922708476
-       cn2_std = 7.905985395119718, & !1/0.12648644666321918
-       cn3_std = 4.709286306085565, & !1/0.2123464013448815
-       cn4_std = 6.120530907438551, & !1/0.1633845192717932
-       cn5_std = 3.292709422117244 !1/0.30370125990558566
+       dsic_std = 30.06550948826654, & !27.605330670270895, & 
+       cn1_std = 20.193012086417255, & !17.64087541846187, & 
+       cn2_std = 8.188911702106404, & !7.905985395119718, & 
+       cn3_std = 4.737963697811628, & !4.709286306085565, & 
+       cn4_std = 6.1660878631852105, & !6.120530907438551, & 
+       cn5_std = 3.2590069503498897 !3.292709422117244 
 
   call get_SIS2_thermo_coefs(IST%ITV, Cp_Water=Cp_water, rho_ice=rho_ice)
 
@@ -416,7 +407,7 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
      WH_SSS(i,j) = OSS%s_surf(i,j)
      WH_mask(i,j) = G%mask2dT(i,j)
      do k=1,ncat
-        WH_HI(i,j) = WH_HI(i,j) + IST%part_size(i,j,k)*(IST%mH_ice(i,j,k)*irho_ice)
+        WH_HI(i,j) = WH_HI(i,j) + (IST%part_size(i,j,k)*(IST%mH_ice(i,j,k)*irho_ice))
      enddo
      if (cvr > 0.) then
         WH_HI(i,j) = WH_HI(i,j) / cvr
@@ -496,7 +487,7 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
 
         do k=1,ncat
            if (posterior(i,j,k) > 0.0) then
-              posterior(i,j,k) = posterior(i,j,k) - dists/positives
+              posterior(i,j,k) = posterior(i,j,k) - (dists/positives)
            elseif (posterior(i,j,k) < 0.0) then
               posterior(i,j,k) = 0.0
            endif   
@@ -532,7 +523,7 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
            IST%mH_pond(i,j,k) = 0.0
            IST%enth_snow(i,j,k,1) = 0.0
            do m=1,nlay
-              IST%enth_ice(i,j,k,m) = qi_new/rho_ice
+              IST%enth_ice(i,j,k,m) = qi_new*irho_ice
               IST%sal_ice(i,j,k,m) = Si_new
            enddo
         !have removed all sea in a grid cell
