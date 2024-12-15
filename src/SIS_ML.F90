@@ -26,7 +26,7 @@ use MOM_io,                    only : MOM_read_data
 use MOM_domains,               only : clone_MOM_domain,MOM_domain_type
 use MOM_domains,               only : pass_var, pass_vector, CGRID_NE
 use SIS_diag_mediator,         only : SIS_diag_ctrl
-use SIS2_ice_thm,              only : get_SIS2_thermo_coefs, T_Freeze, enth_from_TS
+use SIS2_ice_thm,              only : get_SIS2_thermo_coefs
 use SIS_types,                 only : ice_state_type, ocean_sfc_state_type, fast_ice_avg_type, ice_ocean_flux_type
 use MOM_diag_mediator,         only : time_type
 use MOM_file_parser,           only : get_param, param_file_type
@@ -338,7 +338,7 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
   integer :: i, j, k, m, iT, jT
   integer :: is, ie, js, je, ncat, nlay
   integer :: isdw, iedw, jsdw, jedw
-  real    :: cvr, Tf, Tf_ij, enth_new, sic_inc
+  real    :: cvr, Tf, enth_new, sic_inc
   real    :: irho_ice, rho_ice, Cp_water
   real    :: dists, positives
   real    :: scale
@@ -348,7 +348,7 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
 
   !parameters for adding new sea ice to a grid cell which was previously ice free
   real, parameter :: & 
-       !phi_init = 0.75, & !initial liquid fraction of frazil ice
+       phi_init = 0.75, & !initial liquid fraction of frazil ice
        Si_new = 5.0    !salinity of mushy ice (ppt)
   
   !normalization statistics for both networks
@@ -510,13 +510,11 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
   enddo; enddo
   
   !update sea ice/ocean variables based on corrected sea ice state
-  !Ti = min(liquidus_temperature_mush(Si_new/phi_init),-0.1) !-0.1 default
-  !qi_new = enthalpy_ice(Ti, Si_new)
-  Tf = T_Freeze(Si_new, IST%ITV)
+  !see https://github.com/CICE-Consortium/Icepack/blob/main/columnphysics/icepack_therm_itd.F90
+  Tf = min(liquidus_temperature_mush(Si_new/phi_init),-0.1)
+  enth_new = enthalpy_ice(Tf, Si_new)
   do j=js,je ; do i=is,ie
      cvr = 1 - posterior(i,j,0)
-     Tf_ij = min(Tf-0.1, OSS%SST_C(i,j))
-     enth_new = enth_from_TS(Tf_ij, Si_new, IST%ITV)
      sic_inc = 0.0
      do k=1,ncat
         !have added ice to grid cell which was previously ice free
@@ -526,7 +524,7 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
            IST%mH_pond(i,j,k) = 0.0
            IST%enth_snow(i,j,k,1) = 0.0
            do m=1,nlay
-              IST%enth_ice(i,j,k,m) = enth_new !qi_new*irho_ice
+              IST%enth_ice(i,j,k,m) = enth_new*irho_ice
               IST%sal_ice(i,j,k,m) = Si_new
            enddo
         !have removed all sea in a grid cell
@@ -552,9 +550,8 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
 
 end subroutine ML_inference
 
-! update sea ice variables as done in DA:
-! /ncrc/home1/Yongfei.Zhang/dart_manhattan/models/sis/dart_to_sis.f90
-  
+
+! the functions below are taken from https://github.com/CICE-Consortium/Icepack/blob/main/columnphysics/icepack_mushy_physics.F90  
 !=======================================================================
 
 function liquidus_temperature_mush(Sbr) result(zTin)
