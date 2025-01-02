@@ -1549,10 +1549,10 @@ subroutine SIS_slow_thermo_end (CS)
   type(slow_thermo_CS), pointer :: CS   !< The control structure for the SIS_slow_thermo module
                                         !! that is deallocated here
 
-  call SIS2_ice_thm_end(CS%ice_thm_CSp)
-
-  if (associated(CS)) deallocate(CS)
   if (CS%do_ML) call ML_final(CS%ML) !WG
+  call SIS2_ice_thm_end(CS%ice_thm_CSp)
+  if (associated(CS)) deallocate(CS)
+  
 
 end subroutine SIS_slow_thermo_end
 
