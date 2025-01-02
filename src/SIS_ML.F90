@@ -354,36 +354,36 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
   !normalization statistics for both networks
   real, parameter :: &
        !CNN stats
-       sic_mu = 0.3027647350377699, & !0.2990368601723349, &
-       sst_mu = 2.3012412885221227, & !2.352753789056461, &
-       ui_mu = 0.05068449397438217, & !0.050851955768614523, &
-       vi_mu = 0.015560467054164891, & !0.016421272164475663, &
-       hi_mu = 0.37145763696496614, & !0.3624009110428704, &
-       ts_mu = -5.080523107658717, & !-4.948930143980626, &
-       sss_mu = 29.779400744733344, & !29.957828794260223, &
+       sic_mu = 0.29760098549490005, &
+       sst_mu = 2.3628579351247665, &
+       ui_mu = 0.05215740632978765, &
+       vi_mu = 0.015774301594485004, &
+       hi_mu = 0.3428559690813135, &
+       ts_mu = -4.930865654514209, &
+       sss_mu = 29.812795055984434, &
 
-       sic_std = 2.3805323101793143, & !2.393447129624403, & 
-       sst_std = 0.1965674889394199, & !0.19282907421803425, & 
-       ui_std = 8.009159885875313, & !8.114159487957785, & 
-       vi_std = 11.366748919661132, & !11.689382686389193, & 
-       hi_std = 1.561541177578264, & !1.5829379063483167, & 
-       ts_std = 0.11446496215312828, & !0.117467382960497, & 
-       sss_std = 0.09328509234648198, & !0.09351892127265606, & 
+       sic_std = 2.3988684677904093, &
+       sst_std = 0.19315381038814353, &
+       ui_std = 8.089628019796052, & 
+       vi_std = 11.506500421554342, & 
+       hi_std = 1.68075870925751, & 
+       ts_std = 0.1180058324648759, & 
+       sss_std = 0.09315672798399899, & 
 
        !ANN stats
-       dsic_mu = -0.0009532165189332168, & !-0.0009238007032701131, &
-       cn1_mu = 0.012551670710092408, & !0.014416831050737924, &
-       cn2_mu = 0.04230142619650296, & !0.04373226571477122, &
-       cn3_mu = 0.09323385427205945, & !0.09164522823711764, &
-       cn4_mu = 0.05745988754598311, & !0.05570272187413382, &
-       cn5_mu = 0.14054414562635656, & !0.13587840021452144, &
+       dsic_mu = -0.0006077109673556186, &
+       cn1_mu = 0.013881755289701567, &
+       cn2_mu = 0.04523203783883471, &
+       cn3_mu = 0.09591018269427339, &
+       cn4_mu = 0.05589209926886554, &
+       cn5_mu = 0.12853458139886695, &
        
-       dsic_std = 30.06550948826654, & !27.605330670270895, & 
-       cn1_std = 20.193012086417255, & !17.64087541846187, & 
-       cn2_std = 8.188911702106404, & !7.905985395119718, & 
-       cn3_std = 4.737963697811628, & !4.709286306085565, & 
-       cn4_std = 6.1660878631852105, & !6.120530907438551, & 
-       cn5_std = 3.2590069503498897 !3.292709422117244 
+       dsic_std = 26.795896964625015, &
+       cn1_std = 18.43686888204614, &
+       cn2_std = 7.828396154351002, &
+       cn3_std = 4.63604339451611, &
+       cn4_std = 6.17786223701505, &
+       cn5_std = 3.3852270028512286
 
   call get_SIS2_thermo_coefs(IST%ITV, Cp_Water=Cp_water, rho_ice=rho_ice)
 
@@ -514,8 +514,8 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
   Tf = min(liquidus_temperature_mush(Si_new/phi_init),-0.1)
   enth_new = enthalpy_ice(Tf, Si_new)
   do j=js,je ; do i=is,ie
-     cvr = 1 - posterior(i,j,0)
-     sic_inc = 0.0
+     !cvr = 1 - posterior(i,j,0)
+     !sic_inc = 0.0
      do k=1,ncat
         !have added ice to grid cell which was previously ice free
         if (posterior(i,j,k)>0.0 .and. IST%part_size(i,j,k)<=0.0) then
@@ -539,7 +539,7 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
            enddo
         endif
         IST%part_size(i,j,k) = posterior(i,j,k)
-        sic_inc = sic_inc + IST%dCN(i,j,k)
+        !sic_inc = sic_inc + IST%dCN(i,j,k)
      enddo
      IST%part_size(i,j,0) = posterior(i,j,0)
      !if (sic_inc > 0.0 .and. OSS%SST_C(i,j) > OSS%T_fr_ocn(i,j)) then
@@ -551,7 +551,8 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
 end subroutine ML_inference
 
 
-! the functions below are taken from https://github.com/CICE-Consortium/Icepack/blob/main/columnphysics/icepack_mushy_physics.F90  
+! the functions below are taken from https://github.com/CICE-Consortium/Icepack/blob/main/columnphysics/icepack_mushy_physics.F90
+! see also pages 57--62 of the CICE manual (https://citeseerx.ist.psu.edu/document?repid=rep1&type=pdf&doi=5eca93a8fbc716474f8fd80c804319b630f90316)
 !=======================================================================
 
 function liquidus_temperature_mush(Sbr) result(zTin)
