@@ -75,7 +75,8 @@ type, public :: ML_CS ; private
   !< The network weights for both CNN and ANN were raveled into a single vector offline.
   !< See https://github.com/William-gregory/FTorch/tree/SIS2/weights/Torch_to_netcdf.py
   !< TO DO: Generalize code to take any size weight vectors (or matrices?)
-  real, dimension(2304)  :: CNN_weight_vec1 !< 8 x 32 x 3 x 3
+  !real, dimension(2304)  :: CNN_weight_vec1 !< 8 x 32 x 3 x 3
+  real, dimension(1440)  :: CNN_weight_vec1 !< 5 x 32 x 3 x 3
   real, dimension(18432) :: CNN_weight_vec2 !< 32 x 64 x 3 x 3
   real, dimension(73728) :: CNN_weight_vec3 !< 64 x 128 x 3 x 3
   real, dimension(1152)  :: CNN_weight_vec4 !< 128 x 1 x 3 x 3
@@ -311,19 +312,19 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
                                    ::  WH_SIC    !< aggregate concentrations [nondim].
   real, dimension(SZIW_(ML),SZJW_(ML)) &
                                    ::  WH_SST    !< sea-surface temperature [degrees C].
-  real, dimension(SZIW_(ML),SZJW_(ML)) &
-                                   ::  WH_UI     !< zonal ice velocities [ms-1].
-  real, dimension(SZIW_(ML),SZJW_(ML)) &
-                                   ::  WH_VI     !< meridional ice velocities [ms-1].
+  !real, dimension(SZIW_(ML),SZJW_(ML)) &
+  !                                 ::  WH_UI     !< zonal ice velocities [ms-1].
+  !real, dimension(SZIW_(ML),SZJW_(ML)) &
+  !                                 ::  WH_VI     !< meridional ice velocities [ms-1].
   real, dimension(SZIW_(ML),SZJW_(ML)) &
                                    ::  WH_HI     !< mean ice thickness [m].
-  real, dimension(SZIW_(ML),SZJW_(ML)) &
-                                   ::  WH_TS     !< ice-surface skin temperature [degrees C].
+  !real, dimension(SZIW_(ML),SZJW_(ML)) &
+  !                                 ::  WH_TS     !< ice-surface skin temperature [degrees C].
   real, dimension(SZIW_(ML),SZJW_(ML)) &
                                    ::  WH_SSS    !< sea-surface salinity [psu].
   real, dimension(SZIW_(ML),SZJW_(ML)) &
                                    ::  WH_mask   !< land-sea mask (0=land cells, 1=ocean cells)
-  real, dimension(8,SZIW_(ML),SZJW_(ML)) &
+  real, dimension(5,SZIW_(ML),SZJW_(ML)) &
                                    ::  IN_CNN    !< input variables to CNN (predict dSIC)
   real, dimension(7,SZI_(G),SZJ_(G)) &
                                    ::  IN_ANN    !< input variables to ANN (predict dCN)
@@ -356,18 +357,18 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
        !CNN stats
        sic_mu = 0.29760098549490005, &
        sst_mu = 2.3628579351247665, &
-       ui_mu = 0.05215740632978765, &
-       vi_mu = 0.015774301594485004, &
+       !ui_mu = 0.05215740632978765, &
+       !vi_mu = 0.015774301594485004, &
        hi_mu = 0.3428559690813135, &
-       ts_mu = -4.930865654514209, &
+       !ts_mu = -4.930865654514209, &
        sss_mu = 29.812795055984434, &
 
        sic_std = 2.3988684677904093, &
        sst_std = 0.19315381038814353, &
-       ui_std = 8.089628019796052, & 
-       vi_std = 11.506500421554342, & 
+       !ui_std = 8.089628019796052, & 
+       !vi_std = 11.506500421554342, & 
        hi_std = 1.68075870925751, & 
-       ts_std = 0.1180058324648759, & 
+       !ts_std = 0.1180058324648759, & 
        sss_std = 0.09315672798399899, & 
 
        !ANN stats
@@ -392,18 +393,19 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; ncat = IG%CatIce ; nlay = IG%NkIce
   isdw = ML%isdw; iedw = ML%iedw; jsdw = ML%jsdw; jedw = ML%jedw
 
-  call pass_vector(IST%u_ice_C, IST%v_ice_C, G%Domain, stagger=CGRID_NE)
+  !call pass_vector(IST%u_ice_C, IST%v_ice_C, G%Domain, stagger=CGRID_NE)
   
   !populate variables to pad for CNN halos
-  WH_SIC = 0.0 ; WH_SST = 0.0 ; WH_UI = 0.0 ; WH_VI = 0.0 ; WH_HI = 0.0 ;  WH_TS = 0.0 ; WH_SSS = 0.0 ; WH_mask = 0.0
+  !WH_SIC = 0.0 ; WH_SST = 0.0 ; WH_UI = 0.0 ; WH_VI = 0.0 ; WH_HI = 0.0 ;  WH_TS = 0.0 ; WH_SSS = 0.0 ; WH_mask = 0.0
+  WH_SIC = 0.0 ; WH_SST = 0.0 ; WH_HI = 0.0 ; WH_SSS = 0.0 ; WH_mask = 0.0
   cvr = 0.0
   do j=js,je ; do i=is,ie
      cvr = 1 - IST%part_size(i,j,0)
      WH_SIC(i,j) = cvr
      WH_SST(i,j) = OSS%SST_C(i,j)
-     WH_UI(i,j) = (IST%u_ice_C(I-1,j) + IST%u_ice_C(I,j))/2
-     WH_VI(i,j) = (IST%v_ice_C(i,J-1) + IST%v_ice_C(i,J))/2
-     WH_TS(i,j) = FIA%Tskin_avg(i,j)
+     !WH_UI(i,j) = (IST%u_ice_C(I-1,j) + IST%u_ice_C(I,j))/2
+     !WH_VI(i,j) = (IST%v_ice_C(i,J-1) + IST%v_ice_C(i,J))/2
+     !WH_TS(i,j) = FIA%Tskin_avg(i,j)
      WH_SSS(i,j) = OSS%s_surf(i,j)
      WH_mask(i,j) = G%mask2dT(i,j)
      do k=1,ncat
@@ -419,9 +421,9 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
   ! Update the wide halos
   call pass_var(WH_SIC, ML%CNN_Domain)
   call pass_var(WH_SST, ML%CNN_Domain)
-  call pass_vector(WH_UI, WH_VI, ML%CNN_Domain, stagger=CGRID_NE)
+  !call pass_vector(WH_UI, WH_VI, ML%CNN_Domain, stagger=CGRID_NE)
   call pass_var(WH_HI, ML%CNN_Domain)
-  call pass_var(WH_TS, ML%CNN_Domain)
+  !call pass_var(WH_TS, ML%CNN_Domain)
   call pass_var(WH_SSS, ML%CNN_Domain)
   call pass_var(WH_mask, ML%CNN_Domain)
   
@@ -430,12 +432,12 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
   do j=jsdw,jedw ; do i=isdw,iedw
      IN_CNN(1,i,j) = WH_mask(i,j) * ((WH_SIC(i,j) - sic_mu)*sic_std)
      IN_CNN(2,i,j) = WH_mask(i,j) * ((WH_SST(i,j) - sst_mu)*sst_std)
-     IN_CNN(3,i,j) = WH_mask(i,j) * ((WH_UI(i,j) - ui_mu)*ui_std)
-     IN_CNN(4,i,j) = WH_mask(i,j) * ((WH_VI(i,j) - vi_mu)*vi_std)
-     IN_CNN(5,i,j) = WH_mask(i,j) * ((WH_HI(i,j) - hi_mu)*hi_std)
-     IN_CNN(6,i,j) = WH_mask(i,j) * ((WH_TS(i,j) - ts_mu)*ts_std)
-     IN_CNN(7,i,j) = WH_mask(i,j) * ((WH_SSS(i,j) - sss_mu)*sss_std)
-     IN_CNN(8,i,j) = WH_mask(i,j)
+     !IN_CNN(3,i,j) = WH_mask(i,j) * ((WH_UI(i,j) - ui_mu)*ui_std)
+     !IN_CNN(4,i,j) = WH_mask(i,j) * ((WH_VI(i,j) - vi_mu)*vi_std)
+     IN_CNN(3,i,j) = WH_mask(i,j) * ((WH_HI(i,j) - hi_mu)*hi_std)
+     !IN_CNN(6,i,j) = WH_mask(i,j) * ((WH_TS(i,j) - ts_mu)*ts_std)
+     IN_CNN(4,i,j) = WH_mask(i,j) * ((WH_SSS(i,j) - sss_mu)*sss_std)
+     IN_CNN(5,i,j) = WH_mask(i,j)
   enddo ; enddo
 
   dSIC = 0.0
