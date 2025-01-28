@@ -59,9 +59,8 @@ use SIS2_ice_thm,      only : SIS2_ice_thm_CS, SIS2_ice_thm_init, SIS2_ice_thm_e
 use SIS2_ice_thm,      only : ice_resize_SIS2, add_frazil_SIS2, rebalance_ice_layers
 use SIS2_ice_thm,      only : get_SIS2_thermo_coefs, enthalpy_liquid_freeze
 use SIS2_ice_thm,      only : enth_from_TS, Temp_from_En_S, enthalpy_liquid, calculate_T_freeze
-use Forpy_interface,   only : python_interface !WG
-use Forpy_interface,   only : forpy_run_python_init,forpy_run_python_finalize !WG
-use SIS_G23_CNN,       only : CNN_CS,CNN_init,CNN_inference !WG
+use SIS_restart,       only : SIS_restart_CS !WG
+use SIS_ML,            only : ML_CS,ML_init,ML_inference,register_ML_restarts,ML_end !WG
 
 implicit none ; private
 
@@ -138,13 +137,8 @@ type slow_thermo_CS ; private
   !< A pointers to the control structures for a subsidiary module
 
   !!! WG !!!
-  type(python_interface) :: python !< Python interface object
-  type(CNN_CS)           :: CNN    !< Control structure for CNN
-  logical :: use_G23_CNN   !< If true, use a python script to update part_size
-
-  character(len=200) :: & 
-    python_dir, & !< default = ".". The directory in which python scripts are found.
-    python_file   !< default = "pymodule" - this is the python script that calls pyTorch
+  type(ML_CS) :: ML    !< Control structure for the ML model
+  logical     :: do_ML !< If true, perform ML-based bias correction
   !!! WG end !!!
 
   !>@{ Diagnostic IDs
@@ -456,8 +450,8 @@ subroutine slow_thermodynamics(IST, dt_slow, CS, OSS, FIA, XSF, IOF, G, US, IG)
 
   !  Other routines that do thermodynamic vertical processes should be added here
   !!! WG !!!
-  if (CS%use_G23_CNN) &       
-       call CNN_inference(IST, OSS, FIA, IOF,  G, IG, CS%python, US, CS%CNN, dt_slow)
+  if (CS%do_ML) &       
+       call ML_inference(IST, OSS, FIA, IOF, G, IG, CS%ML, dt_slow)
   !!! WG end !!!
 
   ! Do tracer column physics
@@ -1401,7 +1395,7 @@ end subroutine SIS2_thermodynamics
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
 !> SIS_slow_thermo_init - initializes the parameters and diagnostics associated
 !!    with the SIS_slow_thermo module.
-subroutine SIS_slow_thermo_init(Time, G, US, IG, param_file, diag, CS, tracer_flow_CSp)
+subroutine SIS_slow_thermo_init(Time, G, US, IG, param_file, diag, CS, tracer_flow_CSp, Ice_restart)
   type(time_type),     target, intent(in)    :: Time !< The sea-ice model's clock,
                                                      !! set with the current model.
   type(SIS_hor_grid_type),     intent(in)    :: G    !< The horizontal grid structure
@@ -1413,7 +1407,9 @@ subroutine SIS_slow_thermo_init(Time, G, US, IG, param_file, diag, CS, tracer_fl
                                                      !! module that is initialized here
   type(SIS_tracer_flow_control_CS), &
                                pointer       :: tracer_flow_CSp !< A structure that is used to
-                                                     !! orchestrate the calling ice tracer packages
+                                                                !! orchestrate the calling ice tracer packages
+  type(SIS_restart_CS),        pointer       :: Ice_restart !< A pointer to the restart type for the ice
+  
 
 ! This include declares and sets the variable "version".
 #include "version_variable.h"
@@ -1595,19 +1591,14 @@ subroutine SIS_slow_thermo_init(Time, G, US, IG, param_file, diag, CS, tracer_fl
   endif
 
   !!! WG !!!
-  call get_param(param_file, mdl, "USE_G23_CNN", CS%use_G23_CNN, &
-  "Invoke a python script to update part_size.", default=.false.)
-  call get_param(param_file, mdl, "PYTHON_DIR", CS%python_dir, &
-  "The directory in which Python scripts are found.", default=".")
-  CS%python_dir = slasher(CS%python_dir)
-  call get_param(param_file, mdl, "PYTHON_FILE", CS%python_file, &
-  "The name of the Python script for which calls pyTorch.", default="pymodule")
-  CS%python_file = trim(CS%python_file)
-  if (CS%use_G23_CNN) call forpy_run_python_init(CS%python, &
-                              trim(CS%python_dir),trim(CS%python_file))
-  if (CS%use_G23_CNN) call CNN_init(Time, G, param_file, diag, CS%CNN)
+  call get_param(param_file, mdl, "DO_ML", CS%do_ML, &
+  "Perform machine learning based bias correction.", default=.false.)
+  if ( CS%do_ML ) then
+     call ML_init(Time, G, param_file, diag, CS%ML)
+     call register_ML_restarts(CS%ML, Ice_restart)
+  endif
   !!! WG END !!!
-  
+
   call SIS2_ice_thm_init(US, param_file, CS%ice_thm_CSp)
 
   iceClock7 = cpu_clock_id( '  Ice: slow: conservation check', grain=CLOCK_LOOP )
@@ -1641,9 +1632,12 @@ subroutine SIS_slow_thermo_end (CS)
   type(slow_thermo_CS), pointer :: CS   !< The control structure for the SIS_slow_thermo module
                                         !! that is deallocated here
 
+  if ( CS%do_ML ) then !WG
+     call ML_end(CS%ML)
+  endif
+  
   call SIS2_ice_thm_end(CS%ice_thm_CSp)
   
-  if (CS%use_G23_CNN) call forpy_run_python_finalize(CS%python) !WG
   if (associated(CS)) deallocate(CS)
   
 

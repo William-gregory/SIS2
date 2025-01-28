@@ -449,7 +449,7 @@ subroutine alloc_IST_arrays(HI, IG, US, IST, omit_velocities, omit_Tsurf, do_rid
 
   IST%valid_IST = .true.
   allocate(IST%part_size(isd:ied, jsd:jed, 0:CatIce), source=0.0)
-  allocate(IST%dCN(isd:ied, jsd:jed, CatIce), source=0.0) !WG
+  allocate(IST%dCN(      isd:ied, jsd:jed, CatIce), source=0.0) !WG
   allocate(IST%mH_pond(  isd:ied, jsd:jed, CatIce), source=0.0)
   allocate(IST%mH_snow(  isd:ied, jsd:jed, CatIce), source=0.0)
   allocate(IST%enth_snow(isd:ied, jsd:jed, CatIce, 1), source=0.0)
@@ -1100,9 +1100,9 @@ subroutine redistribute_IST_to_IST(IST_in, IST_out, domain_in, domain_out)
   ! The velocity components, rdg_mice, rdg_height, TrReg, and ITV are deliberately not being copied.
   if (associated(IST_out) .and. associated(IST_in)) then
     call redistribute_data(domain_in, IST_in%part_size, domain_out, &
-                           IST_out%part_size, complete=.true.)
+                          IST_out%part_size, complete=.true.)
     call redistribute_data(domain_in, IST_in%dCN, domain_out, &
-                           IST_out%dCN, complete=.false.) !WG
+                          IST_out%dCN, complete=.false.) !WG
     if (allocated(IST_out%t_surf) .or. allocated(IST_in%t_surf)) then
       call redistribute_data(domain_in, IST_in%t_surf, domain_out, &
                              IST_out%t_surf, complete=.false.)
@@ -2041,7 +2041,6 @@ subroutine dealloc_IST_arrays(IST)
   deallocate(IST%part_size, IST%mH_snow, IST%mH_ice)
   deallocate(IST%mH_pond) ! mw/new
   deallocate(IST%dCN) !WG
-  
   deallocate(IST%enth_snow, IST%enth_ice, IST%sal_ice)
   if (allocated(IST%snow_to_ocn)) deallocate(IST%snow_to_ocn)
   if (allocated(IST%enth_snow_to_ocn)) deallocate(IST%enth_snow_to_ocn)
