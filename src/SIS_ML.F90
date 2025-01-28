@@ -188,17 +188,19 @@ subroutine register_ML_restarts(CS, G, Ice_restart, restart_dir)
 
   integer :: id_cn, id_sic, id_sst, id_ui, id_vi, id_hi, id_sw, id_ts, id_sss
   type(domain2d), pointer :: mpp_domain => NULL()
+  type(domain2d), pointer :: mpp_wh_domain => NULL()
   mpp_domain => G%Domain%mpp_domain
+  mpp_wh_domain => CS%CNN_Domain%mpp_domain
 
-  id_cn = register_restart_field(Ice_restart, trim(CS%restart_file), 'running_mean_cn',  CS%CN_filtered, domain=mpp_domain)
-  id_sic = register_restart_field(Ice_restart, trim(CS%restart_file), 'running_mean_sic', CS%SIC_filtered, domain=mpp_domain)
-  id_sst = register_restart_field(Ice_restart, trim(CS%restart_file), 'running_mean_sst', CS%SST_filtered, domain=mpp_domain)
-  id_ui = register_restart_field(Ice_restart, trim(CS%restart_file), 'running_mean_ui',  CS%UI_filtered, domain=mpp_domain)
-  id_vi = register_restart_field(Ice_restart, trim(CS%restart_file), 'running_mean_vi',  CS%VI_filtered, domain=mpp_domain)
-  id_hi = register_restart_field(Ice_restart, trim(CS%restart_file), 'running_mean_hi',  CS%HI_filtered, domain=mpp_domain)
-  !id_sw = register_restart_field(Ice_restart, trim(CS%restart_file), 'running_mean_sw',  CS%SW_filtered, domain=mpp_domain)
-  id_ts = register_restart_field(Ice_restart, trim(CS%restart_file), 'running_mean_ts',  CS%TS_filtered, domain=mpp_domain)
-  id_sss = register_restart_field(Ice_restart, trim(CS%restart_file), 'running_mean_sss', CS%SSS_filtered, domain=mpp_domain)
+  id_cn = register_restart_field(Ice_restart, trim(CS%restart_file), 'running_mean_cn',  CS%CN_filtered, domain=mpp_domain, mandatory=.false.)
+  id_sic = register_restart_field(Ice_restart, trim(CS%restart_file), 'running_mean_sic', CS%SIC_filtered, domain=mpp_wh_domain, mandatory=.false.)
+  id_sst = register_restart_field(Ice_restart, trim(CS%restart_file), 'running_mean_sst', CS%SST_filtered, domain=mpp_wh_domain, mandatory=.false.)
+  id_ui = register_restart_field(Ice_restart, trim(CS%restart_file), 'running_mean_ui',  CS%UI_filtered, domain=mpp_wh_domain, mandatory=.false.)
+  id_vi = register_restart_field(Ice_restart, trim(CS%restart_file), 'running_mean_vi',  CS%VI_filtered, domain=mpp_wh_domain, mandatory=.false.)
+  id_hi = register_restart_field(Ice_restart, trim(CS%restart_file), 'running_mean_hi',  CS%HI_filtered, domain=mpp_wh_domain, mandatory=.false.)
+  !id_sw = register_restart_field(Ice_restart, trim(CS%restart_file), 'running_mean_sw',  CS%SW_filtered, domain=mpp_wh_domain, mandatory=.false.)
+  id_ts = register_restart_field(Ice_restart, trim(CS%restart_file), 'running_mean_ts',  CS%TS_filtered, domain=mpp_wh_domain, mandatory=.false.)
+  id_sss = register_restart_field(Ice_restart, trim(CS%restart_file), 'running_mean_sss', CS%SSS_filtered, domain=mpp_wh_domain, mandatory=.false.)
 
   call restore_state(Ice_restart, id_cn, restart_dir, nonfatal_missing_files=.true.)
   call restore_state(Ice_restart, id_sic, restart_dir, nonfatal_missing_files=.true.)
