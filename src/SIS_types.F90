@@ -1034,8 +1034,8 @@ subroutine copy_IST_to_IST(IST_in, IST_out, HI_in, HI_out, IG)
     IST_out%dCN(i2,j2,k) = IST_in%dCN(i,j,k) !WG
 
     IST_out%enth_snow(i2,j2,k,1) = IST_in%enth_snow(i,j,k,1)
-  enddo; enddo ; enddo
-     
+  enddo ; enddo ; enddo
+
   do m=1,NkIce ; do k=1,ncat ; do j=jsc,jec ; do i=isc,iec
     i2 = i+i_off ; j2 = j+j_off
     IST_out%enth_ice(i2,j2,k,m) = IST_in%enth_ice(i,j,k,m)

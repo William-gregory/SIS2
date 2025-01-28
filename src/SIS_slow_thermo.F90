@@ -70,7 +70,8 @@ use SIS_transport, only : adjust_ice_categories, SIS_transport_CS
 use SIS_tracer_flow_control, only : SIS_tracer_flow_control_CS
 use SIS_tracer_registry, only : SIS_unpack_passive_ice_tr, SIS_repack_passive_ice_tr
 use SIS_tracer_registry, only : SIS_count_passive_tracers
-use SIS_ML,              only : ML_CS,ML_init,ML_inference !WG
+use SIS_ML,              only : ML_CS,ML_init,ML_inference,register_ML_restarts,ML_end !WG
+use fms_io_mod,          only : restart_file_type
 
 implicit none ; private
 
@@ -775,11 +776,6 @@ subroutine SIS2_thermodynamics(IST, dt_slow, CS, OSS, FIA, IOF, G, IG)
     enddo ; enddo
   endif
 
-  !!! WG !!!
-  !if (CS%do_ML) &       
-  !     call ML_inference(IST, OSS, FIA, IOF, G, IG, CS%ML, dt_slow)
-  !!! WG end !!!
-  
   call mpp_clock_end(iceClock6)
 
   if (CS%column_check) then
@@ -1361,7 +1357,7 @@ end subroutine SIS2_thermodynamics
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
 !> SIS_slow_thermo_init - initializes the parameters and diagnostics associated
 !!    with the SIS_slow_thermo module.
-subroutine SIS_slow_thermo_init(Time, G, IG, param_file, diag, CS, tracer_flow_CSp)
+subroutine SIS_slow_thermo_init(Time, G, IG, param_file, diag, CS, tracer_flow_CSp, Ice_restart, restart_dir)
   type(time_type),     target, intent(in)    :: Time !< The sea-ice model's clock,
                                                      !! set with the current model.
   type(SIS_hor_grid_type),     intent(in)    :: G    !< The horizontal grid structure
@@ -1372,7 +1368,10 @@ subroutine SIS_slow_thermo_init(Time, G, IG, param_file, diag, CS, tracer_flow_C
                                                      !! module that is initialized here
   type(SIS_tracer_flow_control_CS), &
                                pointer       :: tracer_flow_CSp !< A structure that is used to
-                                                     !! orchestrate the calling ice tracer packages
+                                                                !! orchestrate the calling ice tracer packages
+  type(restart_file_type),     pointer       :: Ice_restart !< A pointer to the restart type for the ice
+  character(len=*),            intent(in)    :: restart_dir !< A directory in which to find the restart file
+  
 
 ! This include declares and sets the variable "version".
 #include "version_variable.h"
@@ -1513,7 +1512,10 @@ subroutine SIS_slow_thermo_init(Time, G, IG, param_file, diag, CS, tracer_flow_C
   !!! WG !!!
   call get_param(param_file, mdl, "DO_ML", CS%do_ML, &
   "Perform machine learning based bias correction.", default=.false.)
-  if (CS%do_ML) call ML_init(Time, G, param_file, diag, CS%ML)
+  if ( CS%do_ML ) then
+     call ML_init(Time, G, param_file, diag, CS%ML)
+     call register_ML_restarts(CS%ML, G, Ice_restart, restart_dir)
+  endif
   !!! WG END !!!
 
   call SIS2_ice_thm_init(param_file, CS%ice_thm_CSp)
@@ -1549,8 +1551,12 @@ subroutine SIS_slow_thermo_end (CS)
   type(slow_thermo_CS), pointer :: CS   !< The control structure for the SIS_slow_thermo module
                                         !! that is deallocated here
 
+  if ( CS%do_ML ) then !WG
+     call ML_end(CS%ML)
+  endif
+  
   call SIS2_ice_thm_end(CS%ice_thm_CSp)
-
+  
   if (associated(CS)) deallocate(CS)
 
 end subroutine SIS_slow_thermo_end

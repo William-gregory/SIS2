@@ -2587,8 +2587,10 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
 
     Ice%sCS%Time_step_slow = Time_step_slow
 
+    !call SIS_slow_thermo_init(Ice%sCS%Time, sG, sIG, param_file, Ice%sCS%diag, &
+    !                          Ice%sCS%slow_thermo_CSp, Ice%sCS%SIS_tracer_flow_CSp)
     call SIS_slow_thermo_init(Ice%sCS%Time, sG, sIG, param_file, Ice%sCS%diag, &
-                              Ice%sCS%slow_thermo_CSp, Ice%sCS%SIS_tracer_flow_CSp)
+                              Ice%sCS%slow_thermo_CSp, Ice%sCS%SIS_tracer_flow_CSp, Ice%Ice_Restart, dirs%restart_input_dir) !WG
 
     if (specified_ice) then
       call specified_ice_init(Ice%sCS%Time, sG, sIG, param_file, Ice%sCS%diag, &
