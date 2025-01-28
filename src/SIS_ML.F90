@@ -77,8 +77,7 @@ type, public :: ML_CS ; private
   !< The network weights for both CNN and ANN were raveled into a single vector offline.
   !< See https://github.com/William-gregory/FTorch/tree/SIS2/weights/Torch_to_netcdf.py
   !< TO DO: Generalize code to take any size weight vectors (or matrices?)
-  !real, dimension(2592)  :: CNN_weight_vec1 !< 9 x 32 x 3 x 3
-  real, dimension(2304)  :: CNN_weight_vec1 !< 8 x 32 x 3 x 3
+  real, dimension(2592)  :: CNN_weight_vec1 !< 9 x 32 x 3 x 3
   real, dimension(18432) :: CNN_weight_vec2 !< 32 x 64 x 3 x 3
   real, dimension(73728) :: CNN_weight_vec3 !< 64 x 128 x 3 x 3
   real, dimension(1152)  :: CNN_weight_vec4 !< 128 x 1 x 3 x 3
@@ -99,7 +98,7 @@ type, public :: ML_CS ; private
        UI_filtered => NULL(), &   !< Time-filtered zonal ice velocities [ms-1]
        VI_filtered => NULL(), &   !< Time-filtered meridional ice velocities [degC]
        HI_filtered => NULL(), &   !< Time-filtered ice thickness [m]
-       !SW_filtered => NULL(), &   !< Time-filtered net shortwave radiation [Wm-2]
+       SW_filtered => NULL(), &   !< Time-filtered net shortwave radiation [Wm-2]
        TS_filtered => NULL(), &   !< Time-filtered ice-surface skin temperature [degC]
        SSS_filtered => NULL(), &  !< Time-filtered sea-surface salinity [psu]
        land_mask => NULL()        !< Land-sea mask [land cells = 0, ocean cells = 1] 
@@ -172,7 +171,7 @@ subroutine ML_init(Time,G,param_file,diag,CS)
   allocate(CS%UI_filtered(CS%isdw:CS%iedw,CS%jsdw:CS%jedw))  ; CS%UI_filtered(:,:) = 0.
   allocate(CS%VI_filtered(CS%isdw:CS%iedw,CS%jsdw:CS%jedw))  ; CS%VI_filtered(:,:) = 0.
   allocate(CS%HI_filtered(CS%isdw:CS%iedw,CS%jsdw:CS%jedw))  ; CS%HI_filtered(:,:) = 0.
-  !allocate(CS%SW_filtered(CS%isdw:CS%iedw,CS%jsdw:CS%jedw))  ; CS%SW_filtered(:,:) = 0.
+  allocate(CS%SW_filtered(CS%isdw:CS%iedw,CS%jsdw:CS%jedw))  ; CS%SW_filtered(:,:) = 0.
   allocate(CS%TS_filtered(CS%isdw:CS%iedw,CS%jsdw:CS%jedw))  ; CS%TS_filtered(:,:) = 0.
   allocate(CS%SSS_filtered(CS%isdw:CS%iedw,CS%jsdw:CS%jedw)) ; CS%SSS_filtered(:,:) = 0.
   allocate(CS%land_mask(CS%isdw:CS%iedw,CS%jsdw:CS%jedw))    ; CS%land_mask(:,:) = 0.
@@ -198,7 +197,7 @@ subroutine register_ML_restarts(CS, G, Ice_restart, restart_dir)
   id_ui = register_restart_field(Ice_restart, trim(CS%restart_file), 'running_mean_ui',  CS%UI_filtered, domain=mpp_wh_domain, mandatory=.false.)
   id_vi = register_restart_field(Ice_restart, trim(CS%restart_file), 'running_mean_vi',  CS%VI_filtered, domain=mpp_wh_domain, mandatory=.false.)
   id_hi = register_restart_field(Ice_restart, trim(CS%restart_file), 'running_mean_hi',  CS%HI_filtered, domain=mpp_wh_domain, mandatory=.false.)
-  !id_sw = register_restart_field(Ice_restart, trim(CS%restart_file), 'running_mean_sw',  CS%SW_filtered, domain=mpp_wh_domain, mandatory=.false.)
+  id_sw = register_restart_field(Ice_restart, trim(CS%restart_file), 'running_mean_sw',  CS%SW_filtered, domain=mpp_wh_domain, mandatory=.false.)
   id_ts = register_restart_field(Ice_restart, trim(CS%restart_file), 'running_mean_ts',  CS%TS_filtered, domain=mpp_wh_domain, mandatory=.false.)
   id_sss = register_restart_field(Ice_restart, trim(CS%restart_file), 'running_mean_sss', CS%SSS_filtered, domain=mpp_wh_domain, mandatory=.false.)
 
@@ -208,7 +207,7 @@ subroutine register_ML_restarts(CS, G, Ice_restart, restart_dir)
   call restore_state(Ice_restart, id_ui, restart_dir, nonfatal_missing_files=.true.)
   call restore_state(Ice_restart, id_vi, restart_dir, nonfatal_missing_files=.true.)
   call restore_state(Ice_restart, id_hi, restart_dir, nonfatal_missing_files=.true.)
-  !call restore_state(Ice_restart, id_sw, restart_dir, nonfatal_missing_files=.true.)
+  call restore_state(Ice_restart, id_sw, restart_dir, nonfatal_missing_files=.true.)
   call restore_state(Ice_restart, id_ts, restart_dir, nonfatal_missing_files=.true.)
   call restore_state(Ice_restart, id_sss, restart_dir, nonfatal_missing_files=.true.)
   
@@ -372,7 +371,7 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
   type(ML_CS) ,               intent(inout)  :: ML      !< Control structure for the ML model
   real,                       intent(in)     :: dt_slow !< The thermodynamic time step [T ~> s]
 
-  real, dimension(8,SZIW_(ML),SZJW_(ML)) &
+  real, dimension(9,SZIW_(ML),SZJW_(ML)) &
                                    ::  IN_CNN    !< input variables to CNN (predict dSIC)
   real, dimension(7,SZI_(G),SZJ_(G)) &
                                    ::  IN_ANN    !< input variables to ANN (predict dCN)
@@ -383,8 +382,8 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
                                    :: dCN        !< ANN predictions of category SIC corrections
   real, dimension(SZI_(G),SZJ_(G),0:5) &
                                    :: posterior  !< updated part_size (bounded between 0 and 1)
-  !real, dimension(SZI_(G),SZJ_(G)) &
-  !                                 :: net_sw     !< net shortwave radiation [Wm-2]
+  real, dimension(SZI_(G),SZJ_(G)) &
+                                   :: net_sw     !< net shortwave radiation [Wm-2]
   
   integer :: i, j, k, b, m, iT, jT
   integer :: is, ie, js, je, ncat, nlay, nb
@@ -410,7 +409,7 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
        ui_mu = 0.05215740632978765, &
        vi_mu = 0.015774301594485004, &
        hi_mu = 0.3428559690813135, &
-       !sw_mu = 67.89703631265903, &
+       sw_mu = 67.89703631265903, &
        ts_mu = -4.930865654514209, &
        sss_mu = 29.812795055984434, &
 
@@ -419,19 +418,19 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
        ui_std = 8.089628019796052, & 
        vi_std = 11.506500421554342, & 
        hi_std = 1.68075870925751, &
-       !sw_std = 0.013607104867283745, &
+       sw_std = 0.013607104867283745, &
        ts_std = 0.1180058324648759, & 
        sss_std = 0.09315672798399899, & 
 
        !ANN stats
-       dsic_mu = -0.0006077109673556186, & !-0.0011355808093858428, &
+       dsic_mu = -0.0011355808093858428, &
        cn1_mu = 0.013881755289701567, &
        cn2_mu = 0.04523203783883471, &
        cn3_mu = 0.09591018269427339, &
        cn4_mu = 0.05589209926886554, &
        cn5_mu = 0.12853458139886695, &
        
-       dsic_std = 26.795896964625015, & !27.745509886748263, &
+       dsic_std = 27.745509886748263, &
        cn1_std = 18.43686888204614, &
        cn2_std = 7.828396154351002, &
        cn3_std = 4.63604339451611, &
@@ -444,18 +443,18 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
   scale = dt_slow/432000.0 !Network was trained on 5-day (432000-second) increments
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; ncat = IG%CatIce ; nlay = IG%NkIce
   isdw = ML%isdw; iedw = ML%iedw; jsdw = ML%jsdw; jedw = ML%jedw
-  !nb = size(FIA%flux_sw_top,4)
+  nb = size(FIA%flux_sw_top,4)
 
-  !net_sw = 0.0
-  !do j=js,je ; do i=is,ie !compute net shortwave
-  !   do k=0,ncat
-  !      sw_cat = 0
-  !      do b=1,nb
-  !         sw_cat = sw_cat + FIA%flux_sw_top(i,j,k,b)
-  !      enddo
-  !      net_sw(i,j) = net_sw(i,j) + IST%part_size(i,j,k) * sw_cat
-  !   enddo
-  !enddo; enddo
+  net_sw = 0.0
+  do j=js,je ; do i=is,ie !compute net shortwave
+     do k=0,ncat
+        sw_cat = 0
+        do b=1,nb
+           sw_cat = sw_cat + FIA%flux_sw_top(i,j,k,b)
+        enddo
+        net_sw(i,j) = net_sw(i,j) + IST%part_size(i,j,k) * sw_cat
+     enddo
+  enddo; enddo
   
   call pass_vector(IST%u_ice_C, IST%v_ice_C, G%Domain, stagger=CGRID_NE)
 
@@ -470,7 +469,7 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
      ML%SST_filtered(i,j) = bFac*OSS%SST_C(i,j) + aFac*ML%SST_filtered(i,j)
      ML%UI_filtered(i,j) = bFac*((IST%u_ice_C(I-1,j) + IST%u_ice_C(I,j))/2) + aFac*ML%UI_filtered(i,j)
      ML%VI_filtered(i,j) = bFac*((IST%v_ice_C(i,J-1) + IST%v_ice_C(i,J))/2) + aFac*ML%VI_filtered(i,j)
-     !ML%SW_filtered(i,j) = bFac*net_sw(i,j) + aFac*ML%SW_filtered(i,j)
+     ML%SW_filtered(i,j) = bFac*net_sw(i,j) + aFac*ML%SW_filtered(i,j)
      ML%TS_filtered(i,j) = bFac*FIA%Tskin_avg(i,j) + aFac*ML%TS_filtered(i,j)
      ML%SSS_filtered(i,j) = bFac*OSS%s_surf(i,j) + aFac*ML%SSS_filtered(i,j)
      ML%land_mask(i,j) = G%mask2dT(i,j)
@@ -490,7 +489,7 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
   call pass_var(ML%SST_filtered, ML%CNN_Domain)
   call pass_vector(ML%UI_filtered, ML%VI_filtered, ML%CNN_Domain, stagger=CGRID_NE)
   call pass_var(ML%HI_filtered, ML%CNN_Domain)
-  !call pass_var(ML%SW_filtered, ML%CNN_Domain)
+  call pass_var(ML%SW_filtered, ML%CNN_Domain)
   call pass_var(ML%TS_filtered, ML%CNN_Domain)
   call pass_var(ML%SSS_filtered, ML%CNN_Domain)
   call pass_var(ML%land_mask, ML%CNN_Domain)
@@ -503,10 +502,10 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
      IN_CNN(3,i,j) = ML%land_mask(i,j) * ((ML%UI_filtered(i,j) - ui_mu)*ui_std)
      IN_CNN(4,i,j) = ML%land_mask(i,j) * ((ML%VI_filtered(i,j) - vi_mu)*vi_std)
      IN_CNN(5,i,j) = ML%land_mask(i,j) * ((ML%HI_filtered(i,j) - hi_mu)*hi_std)
-     !IN_CNN(6,i,j) = ML%land_mask(i,j) * ((ML%SW_filtered(i,j) - sw_mu)*sw_std)
-     IN_CNN(6,i,j) = ML%land_mask(i,j) * ((ML%TS_filtered(i,j) - ts_mu)*ts_std)
-     IN_CNN(7,i,j) = ML%land_mask(i,j) * ((ML%SSS_filtered(i,j) - sss_mu)*sss_std)
-     IN_CNN(8,i,j) = ML%land_mask(i,j)
+     IN_CNN(6,i,j) = ML%land_mask(i,j) * ((ML%SW_filtered(i,j) - sw_mu)*sw_std)
+     IN_CNN(7,i,j) = ML%land_mask(i,j) * ((ML%TS_filtered(i,j) - ts_mu)*ts_std)
+     IN_CNN(8,i,j) = ML%land_mask(i,j) * ((ML%SSS_filtered(i,j) - sss_mu)*sss_std)
+     IN_CNN(9,i,j) = ML%land_mask(i,j)
   enddo ; enddo
 
   dSIC = 0.0
@@ -621,7 +620,7 @@ subroutine ML_end(CS)
   deallocate(CS%UI_filtered)
   deallocate(CS%VI_filtered)
   deallocate(CS%HI_filtered)
-  !deallocate(CS%SW_filtered)
+  deallocate(CS%SW_filtered)
   deallocate(CS%TS_filtered)
   deallocate(CS%SSS_filtered)
   deallocate(CS%land_mask)
