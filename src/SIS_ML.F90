@@ -479,7 +479,6 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
   real    :: cvr, sit, sw_cat
   real    :: irho_ice, rho_ice
   real    :: scale, t5d
-  logical :: do_postprocess
   
   !normalization statistics for both networks
   real, parameter :: &
@@ -525,7 +524,6 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; ncat = IG%CatIce ; nlay = IG%NkIce
   isdw = ML%isdw; iedw = ML%iedw; jsdw = ML%jsdw; jedw = ML%jedw
   nb = size(FIA%flux_sw_top,4)
-  do_postprocess = .false.
 
   !compute running mean and populate variables to pad for CNN halos
   if ( ML%count <= t5d ) then 
@@ -542,9 +540,7 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
      enddo; enddo
 
      call pass_vector(IST%u_ice_C, IST%v_ice_C, G%Domain, stagger=CGRID_NE)
-     if ( do_postprocess ) then
-        call postprocess(IST, G, IG) 
-     endif
+     call postprocess(IST, G, IG) 
   
      cvr = 0.0
      do j=js,je ; do i=is,ie
@@ -570,8 +566,6 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
      enddo; enddo
 
      if ( ML%count == t5d ) then !5 days have passed, do inference
-
-        do_postprocess = .true.
         
         ! Update the wide halos
         call pass_var(ML%SIC_filtered, ML%CNN_Domain)
