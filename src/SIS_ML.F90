@@ -188,7 +188,7 @@ subroutine register_ML_restarts(CS, G, Ice_restart, restart_dir)
   type(restart_file_type), pointer       :: Ice_restart !< A pointer to the restart type for the ice
   character(len=*),        intent(in)    :: restart_dir !< A directory in which to find the restart file
 
-  integer :: id_cn, id_sic, id_sst, id_ui, id_vi, id_hi, id_sw, id_ts, id_sss
+  integer :: id_cn, id_sic, id_sst, id_ui, id_vi, id_hi, id_sw, id_ts, id_sss, id_cnt
   type(domain2d), pointer :: mpp_domain => NULL()
   type(domain2d), pointer :: mpp_wh_domain => NULL()
   mpp_domain => G%Domain%mpp_domain
