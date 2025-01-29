@@ -88,7 +88,7 @@ type, public :: ML_CS ; private
   character(len=300)  :: CNN_weights !< filename of CNN weights netcdf file
   character(len=300)  :: ANN_weights !< filename of ANN weights netcdf file
 
-  integer, pointer :: &
+  real, pointer :: &
        count => NULL() !< keeps track of 5-day time window for averaging
   real, dimension(:,:,:), pointer :: &
        CN_filtered => NULL()      !< Time-filtered category sea ice concentration [nondim]
@@ -172,7 +172,7 @@ subroutine ML_init(Time,G,param_file,diag,CS)
   allocate(CS%SSS_filtered(CS%isdw:CS%iedw,CS%jsdw:CS%jedw), source=0.)
   allocate(CS%land_mask(CS%isdw:CS%iedw,CS%jsdw:CS%jedw), source=0.)
   allocate(CS%CN_filtered(G%isc:G%iec,G%jsc:G%jec,5), source=0.)
-  allocate(CS%count) ; CS%count = 1
+  allocate(CS%count, source=1.)
 
 end subroutine ML_init
 
@@ -521,7 +521,7 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
 
   irho_ice = 1/rho_ice
   scale = dt_slow/432000.0 !Network was trained on 5-day (432000-second) increments
-  t5d = 432000/dt_slow !number of timesteps in 5 days
+  t5d = 432000.0/dt_slow !number of timesteps in 5 days
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; ncat = IG%CatIce ; nlay = IG%NkIce
   isdw = ML%isdw; iedw = ML%iedw; jsdw = ML%jsdw; jedw = ML%jedw
   nb = size(FIA%flux_sw_top,4)
@@ -621,7 +621,7 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
            enddo
         enddo; enddo
      endif
-     ML%count = ML%count + 1
+     ML%count = ML%count + 1.
   else
      ML%SIC_filtered(:,:) = 0.0
      ML%SST_filtered(:,:) = 0.0
@@ -632,7 +632,7 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
      ML%TS_filtered(:,:) = 0.0
      ML%SSS_filtered(:,:) = 0.0
      ML%CN_filtered(:,:,:) = 0.0
-     ML%count = 1
+     ML%count = 1.
   endif
 
 end subroutine ML_inference
