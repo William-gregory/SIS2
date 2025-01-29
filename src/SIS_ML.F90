@@ -71,7 +71,6 @@ type, public :: ML_CS ; private
   integer :: jsdw !< The lower j-memory limit for the wide halo arrays.
   integer :: jedw !< The upper j-memory limit for the wide halo arrays.
   integer :: CNN_halo_size  !< Halo size at each side of subdomains
-  real    :: ML_mean_window !< timescale over which to compute running mean for network inputs
 
   !< The network weights for both CNN and ANN were raveled into a single vector offline.
   !< See https://github.com/William-gregory/FTorch/tree/SIS2/weights/Torch_to_netcdf.py
@@ -89,6 +88,8 @@ type, public :: ML_CS ; private
   character(len=300)  :: CNN_weights !< filename of CNN weights netcdf file
   character(len=300)  :: ANN_weights !< filename of ANN weights netcdf file
 
+  integer, pointer :: &
+       count => NULL() !< keeps track of 5-day time window for averaging
   real, dimension(:,:,:), pointer :: &
        CN_filtered => NULL()      !< Time-filtered category sea ice concentration [nondim]
   real, dimension(:,:), pointer :: &
@@ -134,10 +135,6 @@ subroutine ML_init(Time,G,param_file,diag,CS)
       "Halo size at each side of subdomains, depends on CNN architecture.", & 
       units="nondim", default=4)
 
-  call get_param(param_file, mdl, "ML_MEAN_WINDOW", CS%ML_mean_window, &
-      "Halo size at each side of subdomains, depends on CNN architecture.", & 
-      units="seconds", default=432000.0)
-
   call get_param(param_file, mdl, "CNN_WEIGHTS", CS%CNN_weights, &
       "CNN optimized weights", &
       default="/gpfs/f5/scratch/gfdl_o/William.Gregory/FTorch/weights/NetworkA_weights.nc")
@@ -175,6 +172,7 @@ subroutine ML_init(Time,G,param_file,diag,CS)
   allocate(CS%SSS_filtered(CS%isdw:CS%iedw,CS%jsdw:CS%jedw), source=0.)
   allocate(CS%land_mask(CS%isdw:CS%iedw,CS%jsdw:CS%jedw), source=0.)
   allocate(CS%CN_filtered(G%isc:G%iec,G%jsc:G%jec,5), source=0.)
+  allocate(CS%count) ; CS%count = 1
 
 end subroutine ML_init
 
@@ -191,6 +189,7 @@ subroutine register_ML_restarts(CS, Ice_restart)
   call register_restart_field(Ice_restart, 'running_mean_sw',  CS%SW_filtered, units='W m-2', mandatory=.false.)
   call register_restart_field(Ice_restart, 'running_mean_ts',  CS%TS_filtered, units='deg C', mandatory=.false.)
   call register_restart_field(Ice_restart, 'running_mean_sss', CS%SSS_filtered, units='g/kg', mandatory=.false.)
+  call register_restart_field(Ice_restart, 'fiveday_counter',  CS%count, units='none', mandatory=.false.)
   
 end subroutine register_ML_restarts
 
@@ -332,6 +331,116 @@ subroutine ANN_forward(IN, OUT, weights1, weights2, weights3, weights4, G)
   enddo; enddo
 
 end subroutine ANN_forward
+
+subroutine postprocess(IST, G, IG)
+  type(ice_state_type),       intent(inout)  :: IST     !< A type describing the state of the sea ice
+  type(SIS_hor_grid_type),    intent(in)     :: G       !< The horizontal grid structure
+  type(ice_grid_type),        intent(in)     :: IG      !< Sea ice specific grid
+
+  real, dimension(SZI_(G),SZJ_(G),0:5) &
+       :: posterior  !< updated part_size (bounded between 0 and 1)
+
+  logical, dimension(5) :: negatives
+  real    :: dists, positives
+  integer :: i, j, k, m
+  integer :: is, ie, js, je, ncat, nlay
+  real    :: cvr, Tf, enth_new
+  real    :: irho_ice, rho_ice
+  real :: hmid(5) = [0.05,0.2,0.5,0.9,2.0] !ITD thicknesses for new ice
+
+  !parameters for adding new sea ice to a grid cell which was previously ice free
+  real, parameter :: & 
+       phi_init = 0.75, & !initial liquid fraction of frazil ice
+       Si_new = 5.0    !salinity of mushy ice (ppt)
+
+  call get_SIS2_thermo_coefs(IST%ITV, rho_ice=rho_ice)
+  is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; ncat = IG%CatIce ; nlay = IG%NkIce
+  irho_ice = 1/rho_ice
+  
+  !Update category concentrations & bound between 0 and 1
+  !This part checks if the updated SIC in any category is below zero.
+  !If it is, spread the equivalent negative value across the other positive categories
+  !E.g if new SIC is [-0.2,0.1,0.2,0.3,0.4], then remove 0.2/4 from categories 2 through 5
+  !E.g if new SIC is [-0.2,-0.1,0.4,0.2,0.1], then remove 0.3/3 from categories 3 through 5
+  !This will continue in a 'while loop' until all categories are >= 0.
+  posterior = 0.0
+  do j=js,je ; do i=is,ie
+     do k=1,ncat
+        posterior(i,j,k) = IST%part_size(i,j,k) + IST%dCN(i,j,k)
+     enddo
+     
+     do
+        negatives = (posterior(i,j,1:) < 0.0)
+        if (.not. any(negatives)) exit
+
+        dists = 0.0
+        positives = 0.0
+        do k=1,ncat
+           if (negatives(k)) then
+              dists = dists + abs(posterior(i,j,k))
+           elseif (posterior(i,j,k) > 0.0) then
+              positives = positives + 1.0
+           endif
+        enddo
+
+        do k=1,ncat
+           if (posterior(i,j,k) > 0.0) then
+              posterior(i,j,k) = posterior(i,j,k) - (dists/positives)
+           elseif (posterior(i,j,k) < 0.0) then
+              posterior(i,j,k) = 0.0
+           endif
+        enddo
+     enddo
+     cvr = 0.0
+     do k=1,ncat
+        cvr = cvr + posterior(i,j,k)
+     enddo
+     if (cvr>1) then
+        do k=1,ncat
+           posterior(i,j,k) = posterior(i,j,k)/cvr
+        enddo
+     endif
+     cvr = 0.0
+     do k=1,ncat
+        cvr = cvr + posterior(i,j,k)
+     enddo
+     posterior(i,j,0) = 1 - cvr
+  enddo; enddo
+
+  !update sea ice/ocean variables based on corrected sea ice state
+  !see https://github.com/CICE-Consortium/Icepack/blob/main/columnphysics/icepack_therm_itd.F90
+  Tf = min(liquidus_temperature_mush(Si_new/phi_init),-0.1)
+  enth_new = enthalpy_ice(Tf, Si_new)
+  do j=js,je ; do i=is,ie
+     do k=1,ncat
+        !have added ice to grid cell which was previously ice free
+        if (posterior(i,j,k)>0.0 .and. IST%part_size(i,j,k)<=0.0) then
+           IST%mH_ice(i,j,k) = hmid(k)*rho_ice
+           IST%mH_snow(i,j,k) = 0.0
+           IST%mH_pond(i,j,k) = 0.0
+           IST%enth_snow(i,j,k,1) = 0.0
+           do m=1,nlay
+              IST%enth_ice(i,j,k,m) = enth_new*irho_ice
+              IST%sal_ice(i,j,k,m) = Si_new
+           enddo
+           !have removed all sea in a grid cell
+        elseif (posterior(i,j,k)<=0.0 .and. IST%part_size(i,j,k)>0.0) then
+           IST%mH_ice(i,j,k) = 0.0
+           IST%mH_snow(i,j,k) = 0.0
+           IST%mH_pond(i,j,k) = 0.0
+           IST%enth_snow(i,j,k,1) = 0.0
+           do m=1,nlay
+              IST%enth_ice(i,j,k,m) = 0.0
+              IST%sal_ice(i,j,k,m) = 0.0
+           enddo
+        endif
+        IST%part_size(i,j,k) = posterior(i,j,k)
+     enddo
+     IST%part_size(i,j,0) = posterior(i,j,0)
+  enddo; enddo
+
+end subroutine postprocess
+
   
 !> This routine does all of the data prep for both the CNN and ANN, including padding the data
 !> for the CNN, and normalizing all inputs. The predicted increments are the added to the prior
@@ -361,26 +470,16 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
                                    :: dSIC       !< CNN predictions of aggregate SIC corrections
   real, dimension(5,SZI_(G),SZJ_(G)) &
                                    :: dCN        !< ANN predictions of category SIC corrections
-  real, dimension(SZI_(G),SZJ_(G),0:5) &
-                                   :: posterior  !< updated part_size (bounded between 0 and 1)
   real, dimension(SZI_(G),SZJ_(G)) &
                                    :: net_sw     !< net shortwave radiation [Wm-2]
   
-  integer :: i, j, k, b, m, iT, jT
+  integer :: i, j, k, b, m
   integer :: is, ie, js, je, ncat, nlay, nb
   integer :: isdw, iedw, jsdw, jedw
-  real    :: cvr, sit, Tf, enth_new, sw_cat
-  real    :: irho_ice, rho_ice, Cp_water
-  real    :: dists, positives
-  real    :: scale, aFac, bFac
-
-  real :: hmid(5) = [0.05,0.2,0.5,0.9,2.0] !ITD thicknesses for new ice
-  logical, dimension(5) :: negatives
-
-  !parameters for adding new sea ice to a grid cell which was previously ice free
-  real, parameter :: & 
-       phi_init = 0.75, & !initial liquid fraction of frazil ice
-       Si_new = 5.0    !salinity of mushy ice (ppt)
+  real    :: cvr, sit, sw_cat
+  real    :: irho_ice, rho_ice
+  real    :: scale, t5d
+  logical :: do_postprocess
   
   !normalization statistics for both networks
   real, parameter :: &
@@ -418,179 +517,123 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
        cn4_std = 5.7322447935064, &
        cn5_std = 3.3207886915690743
 
-  call get_SIS2_thermo_coefs(IST%ITV, Cp_Water=Cp_water, rho_ice=rho_ice)
+  call get_SIS2_thermo_coefs(IST%ITV, rho_ice=rho_ice)
 
   irho_ice = 1/rho_ice
   scale = dt_slow/432000.0 !Network was trained on 5-day (432000-second) increments
+  t5d = 432000/dt_slow !number of timesteps in 5 days
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; ncat = IG%CatIce ; nlay = IG%NkIce
   isdw = ML%isdw; iedw = ML%iedw; jsdw = ML%jsdw; jedw = ML%jedw
   nb = size(FIA%flux_sw_top,4)
-
-  net_sw = 0.0
-  do j=js,je ; do i=is,ie !compute net shortwave
-     do k=0,ncat
-        sw_cat = 0
-        do b=1,nb
-           sw_cat = sw_cat + FIA%flux_sw_top(i,j,k,b)
-        enddo
-        net_sw(i,j) = net_sw(i,j) + IST%part_size(i,j,k) * sw_cat
-     enddo
-  enddo; enddo
-  
-  call pass_vector(IST%u_ice_C, IST%v_ice_C, G%Domain, stagger=CGRID_NE)
+  do_postprocess = .false.
 
   !compute running mean and populate variables to pad for CNN halos
-  aFac = ML%ML_mean_window / ( dt_slow + ML%ML_mean_window )
-  bFac = dt_slow / ( dt_slow + ML%ML_mean_window )
-  cvr = 0.0
-  do j=js,je ; do i=is,ie
-     sit = 0.0
-     cvr = 1 - IST%part_size(i,j,0)
-     ML%SIC_filtered(i,j) = bFac*cvr + aFac*ML%SIC_filtered(i,j)
-     ML%SST_filtered(i,j) = bFac*OSS%SST_C(i,j) + aFac*ML%SST_filtered(i,j)
-     ML%UI_filtered(i,j) = bFac*((IST%u_ice_C(I-1,j) + IST%u_ice_C(I,j))/2) + aFac*ML%UI_filtered(i,j)
-     ML%VI_filtered(i,j) = bFac*((IST%v_ice_C(i,J-1) + IST%v_ice_C(i,J))/2) + aFac*ML%VI_filtered(i,j)
-     ML%SW_filtered(i,j) = bFac*net_sw(i,j) + aFac*ML%SW_filtered(i,j)
-     ML%TS_filtered(i,j) = bFac*FIA%Tskin_avg(i,j) + aFac*ML%TS_filtered(i,j)
-     ML%SSS_filtered(i,j) = bFac*OSS%s_surf(i,j) + aFac*ML%SSS_filtered(i,j)
-     ML%land_mask(i,j) = G%mask2dT(i,j)
-     do k=1,ncat
-        sit = sit + (IST%part_size(i,j,k)*(IST%mH_ice(i,j,k)*irho_ice))
-        ML%CN_filtered(i,j,k) = bFac*IST%part_size(i,j,k) + aFac*ML%CN_filtered(i,j,k)
-     enddo
-     if (cvr > 0.) then
-        ML%HI_filtered(i,j) = bFac*(sit / cvr) + aFac*ML%HI_filtered(i,j)
-     else
-        ML%HI_filtered(i,j) = 0.0
-     endif
-  enddo ; enddo
-  
-  ! Update the wide halos
-  call pass_var(ML%SIC_filtered, ML%CNN_Domain)
-  call pass_var(ML%SST_filtered, ML%CNN_Domain)
-  call pass_vector(ML%UI_filtered, ML%VI_filtered, ML%CNN_Domain, stagger=CGRID_NE)
-  call pass_var(ML%HI_filtered, ML%CNN_Domain)
-  call pass_var(ML%SW_filtered, ML%CNN_Domain)
-  call pass_var(ML%TS_filtered, ML%CNN_Domain)
-  call pass_var(ML%SSS_filtered, ML%CNN_Domain)
-  call pass_var(ML%land_mask, ML%CNN_Domain)
-  
-  IN_CNN = 0.0
-  ! Combine arrays for the CNN and normalize
-  do j=jsdw,jedw ; do i=isdw,iedw
-     IN_CNN(1,i,j) = ML%land_mask(i,j) * ((ML%SIC_filtered(i,j) - sic_mu)*sic_std)
-     IN_CNN(2,i,j) = ML%land_mask(i,j) * ((ML%SST_filtered(i,j) - sst_mu)*sst_std)
-     IN_CNN(3,i,j) = ML%land_mask(i,j) * ((ML%UI_filtered(i,j) - ui_mu)*ui_std)
-     IN_CNN(4,i,j) = ML%land_mask(i,j) * ((ML%VI_filtered(i,j) - vi_mu)*vi_std)
-     IN_CNN(5,i,j) = ML%land_mask(i,j) * ((ML%HI_filtered(i,j) - hi_mu)*hi_std)
-     IN_CNN(6,i,j) = ML%land_mask(i,j) * ((ML%SW_filtered(i,j) - sw_mu)*sw_std)
-     IN_CNN(7,i,j) = ML%land_mask(i,j) * ((ML%TS_filtered(i,j) - ts_mu)*ts_std)
-     IN_CNN(8,i,j) = ML%land_mask(i,j) * ((ML%SSS_filtered(i,j) - sss_mu)*sss_std)
-     IN_CNN(9,i,j) = ML%land_mask(i,j)
-  enddo ; enddo
+  if ( ML%count <= t5d ) then 
 
-  dSIC = 0.0
-  call CNN_forward(IN_CNN, dSIC, ML%CNN_weight_vec1, ML%CNN_weight_vec2, ML%CNN_weight_vec3, ML%CNN_weight_vec4, G)
-  
-  IN_ANN = 0.0
-  do j=js,je ; do i=is,ie
-     IN_ANN(1,i,j) = G%mask2dT(i,j) * ((dSIC(i,j) - dsic_mu)*dsic_std)
-     IN_ANN(2,i,j) = G%mask2dT(i,j) * ((ML%CN_filtered(i,j,1) - cn1_mu)*cn1_std)
-     IN_ANN(3,i,j) = G%mask2dT(i,j) * ((ML%CN_filtered(i,j,2) - cn2_mu)*cn2_std)
-     IN_ANN(4,i,j) = G%mask2dT(i,j) * ((ML%CN_filtered(i,j,3) - cn3_mu)*cn3_std)
-     IN_ANN(5,i,j) = G%mask2dT(i,j) * ((ML%CN_filtered(i,j,4) - cn4_mu)*cn4_std)
-     IN_ANN(6,i,j) = G%mask2dT(i,j) * ((ML%CN_filtered(i,j,5) - cn5_mu)*cn5_std)
-     IN_ANN(7,i,j) = G%mask2dT(i,j)
-  enddo; enddo
-
-  dCN = 0.0
-  call ANN_forward(IN_ANN, dCN, ML%ANN_weight_vec1, ML%ANN_weight_vec2, ML%ANN_weight_vec3, ML%ANN_weight_vec4, G)
-
-  posterior = 0.0
-  do j=js,je ; do i=is,ie
-     do k=1,ncat
-        !save predicted increment as a diagnostic
-        IST%dCN(i,j,k) = G%mask2dT(i,j) * (dCN(k,i,j)*scale)
-        posterior(i,j,k) = IST%part_size(i,j,k) + IST%dCN(i,j,k)
-     enddo
-  enddo; enddo
-
-  !Update category concentrations & bound between 0 and 1
-  !This part checks if the updated SIC in any category is below zero.
-  !If it is, spread the equivalent negative value across the other positive categories
-  !E.g if new SIC is [-0.2,0.1,0.2,0.3,0.4], then remove 0.2/4 from categories 2 through 5
-  !E.g if new SIC is [-0.2,-0.1,0.4,0.2,0.1], then remove 0.3/3 from categories 3 through 5
-  !This will continue in a 'while loop' until all categories are >= 0.
-  do j=js,je ; do i=is,ie
-     do
-        negatives = (posterior(i,j,1:) < 0.0)
-        if (.not. any(negatives)) exit
-
-        dists = 0.0
-        positives = 0.0
-        do k=1,ncat
-           if (negatives(k)) then
-              dists = dists + abs(posterior(i,j,k))
-           elseif (posterior(i,j,k) > 0.0) then
-              positives = positives + 1.0
-           endif
-        enddo
-
-        do k=1,ncat
-           if (posterior(i,j,k) > 0.0) then
-              posterior(i,j,k) = posterior(i,j,k) - (dists/positives)
-           elseif (posterior(i,j,k) < 0.0) then
-              posterior(i,j,k) = 0.0
-           endif   
-        enddo
-     enddo
-     cvr = 0.0
-     do k=1,ncat
-        cvr = cvr + posterior(i,j,k)
-     enddo
-     if (cvr>1) then
-        do k=1,ncat
-           posterior(i,j,k) = posterior(i,j,k)/cvr
-        enddo
-     endif
-     cvr = 0.0
-     do k=1,ncat
-        cvr = cvr + posterior(i,j,k)
-     enddo
-     posterior(i,j,0) = 1 - cvr
-  enddo; enddo
-  
-  !update sea ice/ocean variables based on corrected sea ice state
-  !see https://github.com/CICE-Consortium/Icepack/blob/main/columnphysics/icepack_therm_itd.F90
-  Tf = min(liquidus_temperature_mush(Si_new/phi_init),-0.1)
-  enth_new = enthalpy_ice(Tf, Si_new)
-  do j=js,je ; do i=is,ie
-     do k=1,ncat
-        !have added ice to grid cell which was previously ice free
-        if (posterior(i,j,k)>0.0 .and. IST%part_size(i,j,k)<=0.0) then
-           IST%mH_ice(i,j,k) = hmid(k)*rho_ice
-           IST%mH_snow(i,j,k) = 0.0
-           IST%mH_pond(i,j,k) = 0.0
-           IST%enth_snow(i,j,k,1) = 0.0
-           do m=1,nlay
-              IST%enth_ice(i,j,k,m) = enth_new*irho_ice
-              IST%sal_ice(i,j,k,m) = Si_new
+     net_sw = 0.0
+     do j=js,je ; do i=is,ie !compute net shortwave
+        do k=0,ncat
+           sw_cat = 0
+           do b=1,nb
+              sw_cat = sw_cat + FIA%flux_sw_top(i,j,k,b)
            enddo
-        !have removed all sea in a grid cell
-        elseif (posterior(i,j,k)<=0.0 .and. IST%part_size(i,j,k)>0.0) then
-           IST%mH_ice(i,j,k) = 0.0
-           IST%mH_snow(i,j,k) = 0.0
-           IST%mH_pond(i,j,k) = 0.0
-           IST%enth_snow(i,j,k,1) = 0.0
-           do m=1,nlay
-              IST%enth_ice(i,j,k,m) = 0.0
-              IST%sal_ice(i,j,k,m) = 0.0
-           enddo
+           net_sw(i,j) = net_sw(i,j) + IST%part_size(i,j,k) * sw_cat
+        enddo
+     enddo; enddo
+
+     call pass_vector(IST%u_ice_C, IST%v_ice_C, G%Domain, stagger=CGRID_NE)
+     if ( do_postprocess ) then
+        call postprocess(IST, G, IG) 
+     endif
+  
+     cvr = 0.0
+     do j=js,je ; do i=is,ie
+        sit = 0.0
+        cvr = 1 - IST%part_size(i,j,0)
+        ML%SIC_filtered(i,j) = (cvr*scale) + ML%SIC_filtered(i,j)
+        ML%SST_filtered(i,j) = (OSS%SST_C(i,j)*scale) + ML%SST_filtered(i,j)
+        ML%UI_filtered(i,j) = (((IST%u_ice_C(I-1,j) + IST%u_ice_C(I,j))/2)*scale) + ML%UI_filtered(i,j)
+        ML%VI_filtered(i,j) = (((IST%v_ice_C(i,J-1) + IST%v_ice_C(i,J))/2)*scale) + ML%VI_filtered(i,j)
+        ML%SW_filtered(i,j) = (net_sw(i,j)*scale) + ML%SW_filtered(i,j)
+        ML%TS_filtered(i,j) = (FIA%Tskin_avg(i,j)*scale) + ML%TS_filtered(i,j)
+        ML%SSS_filtered(i,j) = (OSS%s_surf(i,j)*scale) + ML%SSS_filtered(i,j)
+        ML%land_mask(i,j) = G%mask2dT(i,j)
+        do k=1,ncat
+           sit = sit + (IST%part_size(i,j,k)*(IST%mH_ice(i,j,k)*irho_ice))
+           ML%CN_filtered(i,j,k) = (IST%part_size(i,j,k)*scale) + ML%CN_filtered(i,j,k)
+        enddo
+        if (cvr > 0.) then
+           ML%HI_filtered(i,j) = ((sit / cvr)*scale) + ML%HI_filtered(i,j)
+        else
+           ML%HI_filtered(i,j) = 0.0
         endif
-        IST%part_size(i,j,k) = posterior(i,j,k)
-     enddo
-     IST%part_size(i,j,0) = posterior(i,j,0)
- enddo; enddo
+     enddo; enddo
+
+     if ( ML%count == t5d ) then !5 days have passed, do inference
+
+        do_postprocess = .true.
+        
+        ! Update the wide halos
+        call pass_var(ML%SIC_filtered, ML%CNN_Domain)
+        call pass_var(ML%SST_filtered, ML%CNN_Domain)
+        call pass_vector(ML%UI_filtered, ML%VI_filtered, ML%CNN_Domain, stagger=CGRID_NE)
+        call pass_var(ML%HI_filtered, ML%CNN_Domain)
+        call pass_var(ML%SW_filtered, ML%CNN_Domain)
+        call pass_var(ML%TS_filtered, ML%CNN_Domain)
+        call pass_var(ML%SSS_filtered, ML%CNN_Domain)
+        call pass_var(ML%land_mask, ML%CNN_Domain)
+
+        IN_CNN = 0.0
+        ! Combine arrays for the CNN and normalize
+        do j=jsdw,jedw ; do i=isdw,iedw
+           IN_CNN(1,i,j) = ML%land_mask(i,j) * ((ML%SIC_filtered(i,j) - sic_mu)*sic_std)
+           IN_CNN(2,i,j) = ML%land_mask(i,j) * ((ML%SST_filtered(i,j) - sst_mu)*sst_std)
+           IN_CNN(3,i,j) = ML%land_mask(i,j) * ((ML%UI_filtered(i,j) - ui_mu)*ui_std)
+           IN_CNN(4,i,j) = ML%land_mask(i,j) * ((ML%VI_filtered(i,j) - vi_mu)*vi_std)
+           IN_CNN(5,i,j) = ML%land_mask(i,j) * ((ML%HI_filtered(i,j) - hi_mu)*hi_std)
+           IN_CNN(6,i,j) = ML%land_mask(i,j) * ((ML%SW_filtered(i,j) - sw_mu)*sw_std)
+           IN_CNN(7,i,j) = ML%land_mask(i,j) * ((ML%TS_filtered(i,j) - ts_mu)*ts_std)
+           IN_CNN(8,i,j) = ML%land_mask(i,j) * ((ML%SSS_filtered(i,j) - sss_mu)*sss_std)
+           IN_CNN(9,i,j) = ML%land_mask(i,j)
+        enddo ; enddo
+
+        dSIC = 0.0
+        call CNN_forward(IN_CNN, dSIC, ML%CNN_weight_vec1, ML%CNN_weight_vec2, ML%CNN_weight_vec3, ML%CNN_weight_vec4, G)
+
+        IN_ANN = 0.0
+        do j=js,je ; do i=is,ie
+           IN_ANN(1,i,j) = G%mask2dT(i,j) * ((dSIC(i,j) - dsic_mu)*dsic_std)
+           IN_ANN(2,i,j) = G%mask2dT(i,j) * ((ML%CN_filtered(i,j,1) - cn1_mu)*cn1_std)
+           IN_ANN(3,i,j) = G%mask2dT(i,j) * ((ML%CN_filtered(i,j,2) - cn2_mu)*cn2_std)
+           IN_ANN(4,i,j) = G%mask2dT(i,j) * ((ML%CN_filtered(i,j,3) - cn3_mu)*cn3_std)
+           IN_ANN(5,i,j) = G%mask2dT(i,j) * ((ML%CN_filtered(i,j,4) - cn4_mu)*cn4_std)
+           IN_ANN(6,i,j) = G%mask2dT(i,j) * ((ML%CN_filtered(i,j,5) - cn5_mu)*cn5_std)
+           IN_ANN(7,i,j) = G%mask2dT(i,j)
+        enddo; enddo
+
+        dCN = 0.0
+        call ANN_forward(IN_ANN, dCN, ML%ANN_weight_vec1, ML%ANN_weight_vec2, ML%ANN_weight_vec3, ML%ANN_weight_vec4, G)
+        
+        do j=js,je ; do i=is,ie
+           do k=1,ncat
+              !save predicted increment as a diagnostic
+              IST%dCN(i,j,k) = G%mask2dT(i,j) * (dCN(k,i,j)*scale)
+           enddo
+        enddo; enddo
+     endif
+     ML%count = ML%count + 1
+  else
+     ML%SIC_filtered(:,:) = 0.0
+     ML%SST_filtered(:,:) = 0.0
+     ML%UI_filtered(:,:) = 0.0
+     ML%VI_filtered(:,:) = 0.0
+     ML%HI_filtered(:,:) = 0.0
+     ML%SW_filtered(:,:) = 0.0
+     ML%TS_filtered(:,:) = 0.0
+     ML%SSS_filtered(:,:) = 0.0
+     ML%CN_filtered(:,:,:) = 0.0
+     ML%count = 1
+  endif
 
 end subroutine ML_inference
 
@@ -606,6 +649,7 @@ subroutine ML_end(CS)
   deallocate(CS%SSS_filtered)
   deallocate(CS%land_mask)
   deallocate(CS%CN_filtered)
+  deallocate(CS%count)
 end subroutine ML_end
 
 ! the functions below are taken from https://github.com/CICE-Consortium/Icepack/blob/main/columnphysics/icepack_mushy_physics.F90
