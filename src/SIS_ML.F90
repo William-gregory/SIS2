@@ -553,8 +553,8 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
   do_postprocess = .false.
 
   !compute running mean and populate variables to pad for CNN halos
-  if ( ML%count <= t5d ) then 
-
+  if ( ML%count <= t5d ) then
+     
      net_sw = 0.0
      do j=js,je ; do i=is,ie !compute net shortwave
         do k=0,ncat
