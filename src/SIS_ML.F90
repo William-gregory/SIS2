@@ -71,6 +71,7 @@ type, public :: ML_CS ; private
   integer :: jsdw !< The lower j-memory limit for the wide halo arrays.
   integer :: jedw !< The upper j-memory limit for the wide halo arrays.
   integer :: CNN_halo_size  !< Halo size at each side of subdomains
+  real    :: ML_freq !< frequency of ML corrections
 
   !< The network weights for both CNN and ANN were raveled into a single vector offline.
   !< See https://github.com/William-gregory/FTorch/tree/SIS2/weights/Torch_to_netcdf.py
@@ -91,7 +92,8 @@ type, public :: ML_CS ; private
   real, pointer :: &
        count => NULL() !< keeps track of 5-day time window for averaging
   real, dimension(:,:,:), pointer :: &
-       CN_filtered => NULL()      !< Time-filtered category sea ice concentration [nondim]
+       CN_filtered => NULL()       !< Time-filtered category sea ice concentration [nondim]
+       !dCN_filtered => NULL()      !< Time-filtered category sea ice concentration tendency [nondim]
   real, dimension(:,:), pointer :: &
        SIC_filtered => NULL(), &  !< Time-filtered aggregate sea ice concentration [nondim]
        SST_filtered => NULL(), &  !< Time-filtered sea-surface temperature [degC]
@@ -134,6 +136,10 @@ subroutine ML_init(Time,G,param_file,diag,CS)
   call get_param(param_file, mdl, "CNN_HALO_SIZE", CS%CNN_halo_size, &
       "Halo size at each side of subdomains, depends on CNN architecture.", & 
       units="nondim", default=4)
+
+  call get_param(param_file, mdl, "ML_FREQ", CS%ML_freq, &
+      "Frequency (in seconds) of applying ML corrections", & 
+      units="seconds", default=86400.0)
 
   call get_param(param_file, mdl, "CNN_WEIGHTS", CS%CNN_weights, &
       "CNN optimized weights", &
@@ -189,7 +195,7 @@ subroutine register_ML_restarts(CS, Ice_restart)
   call register_restart_field(Ice_restart, 'running_mean_sw',  CS%SW_filtered, units='W m-2', mandatory=.false.)
   call register_restart_field(Ice_restart, 'running_mean_ts',  CS%TS_filtered, units='deg C', mandatory=.false.)
   call register_restart_field(Ice_restart, 'running_mean_sss', CS%SSS_filtered, units='g/kg', mandatory=.false.)
-  call register_restart_field(Ice_restart, 'fiveday_counter',  CS%count, units='none', mandatory=.false.)
+  call register_restart_field(Ice_restart, 'day_counter',  CS%count, units='none', mandatory=.false.)
   
 end subroutine register_ML_restarts
 
@@ -478,7 +484,7 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
   integer :: isdw, iedw, jsdw, jedw
   real    :: cvr, sit, sw_cat
   real    :: irho_ice, rho_ice
-  real    :: scale, t5d
+  real    :: scale, nsteps, nsteps_i
   
   !normalization statistics for both networks
   real, parameter :: &
@@ -499,7 +505,7 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
        hi_std = 1.4135317180558278, &
        sw_std = 0.014621315593917536, &
        ts_std = 0.10882083297442714, &
-       sss_std = 0.39935800256758885, & 
+       sss_std = 0.39935800256758885, &
 
        !ANN stats
        dsic_mu = -0.0030454079046698256, &
@@ -519,14 +525,15 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
   call get_SIS2_thermo_coefs(IST%ITV, rho_ice=rho_ice)
 
   irho_ice = 1/rho_ice
-  scale = dt_slow/432000.0 !Network was trained on 5-day (432000-second) increments
-  t5d = 432000.0/dt_slow !number of timesteps in 5 days
+  scale = ML%ML_freq/432000.0 !Network was trained on 5-day (432000-second) increments
+  nsteps = ML%ML_freq/dt_slow !number of timesteps in ML%ML_freq
+  nsteps_i = dt_slow/ML%ML_freq
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; ncat = IG%CatIce ; nlay = IG%NkIce
   isdw = ML%isdw; iedw = ML%iedw; jsdw = ML%jsdw; jedw = ML%jedw
   nb = size(FIA%flux_sw_top,4)
 
   !compute running mean and populate variables to pad for CNN halos
-  if ( ML%count <= t5d ) then 
+  if ( ML%count <= nsteps ) then 
 
      net_sw = 0.0
      do j=js,je ; do i=is,ie !compute net shortwave
@@ -540,32 +547,31 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
      enddo; enddo
 
      call pass_vector(IST%u_ice_C, IST%v_ice_C, G%Domain, stagger=CGRID_NE)
-     call postprocess(IST, G, IG) 
-  
+     
      cvr = 0.0
      do j=js,je ; do i=is,ie
         sit = 0.0
         cvr = 1 - IST%part_size(i,j,0)
-        ML%SIC_filtered(i,j) = (cvr*scale) + ML%SIC_filtered(i,j)
-        ML%SST_filtered(i,j) = (OSS%SST_C(i,j)*scale) + ML%SST_filtered(i,j)
-        ML%UI_filtered(i,j) = (((IST%u_ice_C(I-1,j) + IST%u_ice_C(I,j))/2)*scale) + ML%UI_filtered(i,j)
-        ML%VI_filtered(i,j) = (((IST%v_ice_C(i,J-1) + IST%v_ice_C(i,J))/2)*scale) + ML%VI_filtered(i,j)
-        ML%SW_filtered(i,j) = (net_sw(i,j)*scale) + ML%SW_filtered(i,j)
-        ML%TS_filtered(i,j) = (FIA%Tskin_avg(i,j)*scale) + ML%TS_filtered(i,j)
-        ML%SSS_filtered(i,j) = (OSS%s_surf(i,j)*scale) + ML%SSS_filtered(i,j)
+        ML%SIC_filtered(i,j) = (cvr*nsteps_i) + ML%SIC_filtered(i,j)
+        ML%SST_filtered(i,j) = (OSS%SST_C(i,j)*nsteps_i) + ML%SST_filtered(i,j)
+        ML%UI_filtered(i,j) = (((IST%u_ice_C(I-1,j) + IST%u_ice_C(I,j))/2)*nsteps_i) + ML%UI_filtered(i,j)
+        ML%VI_filtered(i,j) = (((IST%v_ice_C(i,J-1) + IST%v_ice_C(i,J))/2)*nsteps_i) + ML%VI_filtered(i,j)
+        ML%SW_filtered(i,j) = (net_sw(i,j)*nsteps_i) + ML%SW_filtered(i,j)
+        ML%TS_filtered(i,j) = (FIA%Tskin_avg(i,j)*nsteps_i) + ML%TS_filtered(i,j)
+        ML%SSS_filtered(i,j) = (OSS%s_surf(i,j)*nsteps_i) + ML%SSS_filtered(i,j)
         ML%land_mask(i,j) = G%mask2dT(i,j)
         do k=1,ncat
            sit = sit + (IST%part_size(i,j,k)*(IST%mH_ice(i,j,k)*irho_ice))
-           ML%CN_filtered(i,j,k) = (IST%part_size(i,j,k)*scale) + ML%CN_filtered(i,j,k)
+           ML%CN_filtered(i,j,k) = (IST%part_size(i,j,k)*nsteps_i) + ML%CN_filtered(i,j,k)
         enddo
         if (cvr > 0.) then
-           ML%HI_filtered(i,j) = ((sit / cvr)*scale) + ML%HI_filtered(i,j)
+           ML%HI_filtered(i,j) = ((sit / cvr)*nsteps_i) + ML%HI_filtered(i,j)
         else
            ML%HI_filtered(i,j) = 0.0
         endif
      enddo; enddo
 
-     if ( ML%count == t5d ) then !5 days have passed, do inference
+     if ( ML%count == nsteps ) then !nsteps have passed, do inference
         
         ! Update the wide halos
         call pass_var(ML%SIC_filtered, ML%CNN_Domain)
@@ -574,7 +580,7 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
         call pass_var(ML%HI_filtered, ML%CNN_Domain)
         call pass_var(ML%SW_filtered, ML%CNN_Domain)
         call pass_var(ML%TS_filtered, ML%CNN_Domain)
-        call pass_var(ML%SSS_filtered, ML%CNN_Domain)
+        call pass_var(ML%SSS_filtered, ML%CNN_Domain)        
         call pass_var(ML%land_mask, ML%CNN_Domain)
 
         IN_CNN = 0.0
@@ -614,6 +620,7 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
               IST%dCN(i,j,k) = G%mask2dT(i,j) * (dCN(k,i,j)*scale)
            enddo
         enddo; enddo
+        call postprocess(IST, G, IG)
      endif
      ML%count = ML%count + 1.
   else
