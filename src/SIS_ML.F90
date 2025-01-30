@@ -93,7 +93,6 @@ type, public :: ML_CS ; private
        count => NULL() !< keeps track of 5-day time window for averaging
   real, dimension(:,:,:), pointer :: &
        CN_filtered => NULL()       !< Time-filtered category sea ice concentration [nondim]
-       !dCN_filtered => NULL()      !< Time-filtered category sea ice concentration tendency [nondim]
   real, dimension(:,:), pointer :: &
        SIC_filtered => NULL(), &  !< Time-filtered aggregate sea ice concentration [nondim]
        SST_filtered => NULL(), &  !< Time-filtered sea-surface temperature [degC]
@@ -338,8 +337,9 @@ subroutine ANN_forward(IN, OUT, weights1, weights2, weights3, weights4, G)
 
 end subroutine ANN_forward
 
-subroutine postprocess(IST, G, IG)
+subroutine postprocess(IST, dCN, G, IG)
   type(ice_state_type),       intent(inout)  :: IST     !< A type describing the state of the sea ice
+  real, dimension(:,:,:),     intent(in)     :: dCN     !< predicted category increments
   type(SIS_hor_grid_type),    intent(in)     :: G       !< The horizontal grid structure
   type(ice_grid_type),        intent(in)     :: IG      !< Sea ice specific grid
 
@@ -372,7 +372,7 @@ subroutine postprocess(IST, G, IG)
   posterior = 0.0
   do j=js,je ; do i=is,ie
      do k=1,ncat
-        posterior(i,j,k) = IST%part_size(i,j,k) + IST%dCN(i,j,k)
+        posterior(i,j,k) = IST%part_size(i,j,k) + dCN(k,i,j)
      enddo
      
      do
@@ -532,98 +532,93 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
   isdw = ML%isdw; iedw = ML%iedw; jsdw = ML%jsdw; jedw = ML%jedw
   nb = size(FIA%flux_sw_top,4)
 
-  !compute running mean and populate variables to pad for CNN halos
-  if ( ML%count <= nsteps ) then 
-
-     net_sw = 0.0
-     do j=js,je ; do i=is,ie !compute net shortwave
-        do k=0,ncat
-           sw_cat = 0
-           do b=1,nb
-              sw_cat = sw_cat + FIA%flux_sw_top(i,j,k,b)
-           enddo
-           net_sw(i,j) = net_sw(i,j) + IST%part_size(i,j,k) * sw_cat
+  net_sw = 0.0
+  do j=js,je ; do i=is,ie !compute net shortwave
+     do k=0,ncat
+        sw_cat = 0
+        do b=1,nb
+           sw_cat = sw_cat + FIA%flux_sw_top(i,j,k,b)
         enddo
-     enddo; enddo
+        net_sw(i,j) = net_sw(i,j) + IST%part_size(i,j,k) * sw_cat
+     enddo
+  enddo; enddo
 
-     call pass_vector(IST%u_ice_C, IST%v_ice_C, G%Domain, stagger=CGRID_NE)
-     
-     cvr = 0.0
-     do j=js,je ; do i=is,ie
-        sit = 0.0
-        cvr = 1 - IST%part_size(i,j,0)
-        ML%SIC_filtered(i,j) = (cvr*nsteps_i) + ML%SIC_filtered(i,j)
-        ML%SST_filtered(i,j) = (OSS%SST_C(i,j)*nsteps_i) + ML%SST_filtered(i,j)
-        ML%UI_filtered(i,j) = (((IST%u_ice_C(I-1,j) + IST%u_ice_C(I,j))/2)*nsteps_i) + ML%UI_filtered(i,j)
-        ML%VI_filtered(i,j) = (((IST%v_ice_C(i,J-1) + IST%v_ice_C(i,J))/2)*nsteps_i) + ML%VI_filtered(i,j)
-        ML%SW_filtered(i,j) = (net_sw(i,j)*nsteps_i) + ML%SW_filtered(i,j)
-        ML%TS_filtered(i,j) = (FIA%Tskin_avg(i,j)*nsteps_i) + ML%TS_filtered(i,j)
-        ML%SSS_filtered(i,j) = (OSS%s_surf(i,j)*nsteps_i) + ML%SSS_filtered(i,j)
-        ML%land_mask(i,j) = G%mask2dT(i,j)
-        do k=1,ncat
-           sit = sit + (IST%part_size(i,j,k)*(IST%mH_ice(i,j,k)*irho_ice))
-           ML%CN_filtered(i,j,k) = (IST%part_size(i,j,k)*nsteps_i) + ML%CN_filtered(i,j,k)
-        enddo
-        if (cvr > 0.) then
-           ML%HI_filtered(i,j) = ((sit / cvr)*nsteps_i) + ML%HI_filtered(i,j)
-        else
-           ML%HI_filtered(i,j) = 0.0
-        endif
-     enddo; enddo
+  call pass_vector(IST%u_ice_C, IST%v_ice_C, G%Domain, stagger=CGRID_NE)
 
-     if ( ML%count == nsteps ) then !nsteps have passed, do inference
-        
-        ! Update the wide halos
-        call pass_var(ML%SIC_filtered, ML%CNN_Domain)
-        call pass_var(ML%SST_filtered, ML%CNN_Domain)
-        call pass_vector(ML%UI_filtered, ML%VI_filtered, ML%CNN_Domain, stagger=CGRID_NE)
-        call pass_var(ML%HI_filtered, ML%CNN_Domain)
-        call pass_var(ML%SW_filtered, ML%CNN_Domain)
-        call pass_var(ML%TS_filtered, ML%CNN_Domain)
-        call pass_var(ML%SSS_filtered, ML%CNN_Domain)        
-        call pass_var(ML%land_mask, ML%CNN_Domain)
-
-        IN_CNN = 0.0
-        ! Combine arrays for the CNN and normalize
-        do j=jsdw,jedw ; do i=isdw,iedw
-           IN_CNN(1,i,j) = ML%land_mask(i,j) * ((ML%SIC_filtered(i,j) - sic_mu)*sic_std)
-           IN_CNN(2,i,j) = ML%land_mask(i,j) * ((ML%SST_filtered(i,j) - sst_mu)*sst_std)
-           IN_CNN(3,i,j) = ML%land_mask(i,j) * ((ML%UI_filtered(i,j) - ui_mu)*ui_std)
-           IN_CNN(4,i,j) = ML%land_mask(i,j) * ((ML%VI_filtered(i,j) - vi_mu)*vi_std)
-           IN_CNN(5,i,j) = ML%land_mask(i,j) * ((ML%HI_filtered(i,j) - hi_mu)*hi_std)
-           IN_CNN(6,i,j) = ML%land_mask(i,j) * ((ML%SW_filtered(i,j) - sw_mu)*sw_std)
-           IN_CNN(7,i,j) = ML%land_mask(i,j) * ((ML%TS_filtered(i,j) - ts_mu)*ts_std)
-           IN_CNN(8,i,j) = ML%land_mask(i,j) * ((ML%SSS_filtered(i,j) - sss_mu)*sss_std)
-           IN_CNN(9,i,j) = ML%land_mask(i,j)
-        enddo ; enddo
-
-        dSIC = 0.0
-        call CNN_forward(IN_CNN, dSIC, ML%CNN_weight_vec1, ML%CNN_weight_vec2, ML%CNN_weight_vec3, ML%CNN_weight_vec4, G)
-
-        IN_ANN = 0.0
-        do j=js,je ; do i=is,ie
-           IN_ANN(1,i,j) = G%mask2dT(i,j) * ((dSIC(i,j) - dsic_mu)*dsic_std)
-           IN_ANN(2,i,j) = G%mask2dT(i,j) * ((ML%CN_filtered(i,j,1) - cn1_mu)*cn1_std)
-           IN_ANN(3,i,j) = G%mask2dT(i,j) * ((ML%CN_filtered(i,j,2) - cn2_mu)*cn2_std)
-           IN_ANN(4,i,j) = G%mask2dT(i,j) * ((ML%CN_filtered(i,j,3) - cn3_mu)*cn3_std)
-           IN_ANN(5,i,j) = G%mask2dT(i,j) * ((ML%CN_filtered(i,j,4) - cn4_mu)*cn4_std)
-           IN_ANN(6,i,j) = G%mask2dT(i,j) * ((ML%CN_filtered(i,j,5) - cn5_mu)*cn5_std)
-           IN_ANN(7,i,j) = G%mask2dT(i,j)
-        enddo; enddo
-
-        dCN = 0.0
-        call ANN_forward(IN_ANN, dCN, ML%ANN_weight_vec1, ML%ANN_weight_vec2, ML%ANN_weight_vec3, ML%ANN_weight_vec4, G)
-        
-        do j=js,je ; do i=is,ie
-           do k=1,ncat
-              !save predicted increment as a diagnostic
-              IST%dCN(i,j,k) = G%mask2dT(i,j) * (dCN(k,i,j)*scale)
-           enddo
-        enddo; enddo
-        call postprocess(IST, G, IG)
+  cvr = 0.0
+  do j=js,je ; do i=is,ie
+     sit = 0.0
+     cvr = 1 - IST%part_size(i,j,0)
+     ML%SIC_filtered(i,j) = ML%SIC_filtered(i,j) + (cvr*nsteps_i)
+     ML%SST_filtered(i,j) = ML%SST_filtered(i,j) + (OSS%SST_C(i,j)*nsteps_i)
+     ML%UI_filtered(i,j) =  ML%UI_filtered(i,j) + (((IST%u_ice_C(I-1,j) + IST%u_ice_C(I,j))/2)*nsteps_i)
+     ML%VI_filtered(i,j) =  ML%VI_filtered(i,j) + (((IST%v_ice_C(i,J-1) + IST%v_ice_C(i,J))/2)*nsteps_i)
+     ML%SW_filtered(i,j) =  ML%SW_filtered(i,j) + (net_sw(i,j)*nsteps_i) 
+     ML%TS_filtered(i,j) =  ML%TS_filtered(i,j) + (FIA%Tskin_avg(i,j)*nsteps_i)
+     ML%SSS_filtered(i,j) = ML%SSS_filtered(i,j) + (OSS%s_surf(i,j)*nsteps_i)
+     ML%land_mask(i,j) = G%mask2dT(i,j)
+     do k=1,ncat
+        sit = sit + (IST%part_size(i,j,k)*(IST%mH_ice(i,j,k)*irho_ice))
+        ML%CN_filtered(i,j,k) = ML%CN_filtered(i,j,k) + (IST%part_size(i,j,k)*nsteps_i)
+     enddo
+     if (cvr > 0.) then
+        ML%HI_filtered(i,j) = ML%HI_filtered(i,j) + ((sit / cvr)*nsteps_i) 
+     else
+        ML%HI_filtered(i,j) = ML%HI_filtered(i,j) + 0.0
      endif
-     ML%count = ML%count + 1.
-  else
+  enddo; enddo
+
+  if ( ML%count == nsteps ) then !nsteps have passed, do inference
+
+     ! Update the wide halos
+     call pass_var(ML%SIC_filtered, ML%CNN_Domain)
+     call pass_var(ML%SST_filtered, ML%CNN_Domain)
+     call pass_vector(ML%UI_filtered, ML%VI_filtered, ML%CNN_Domain, stagger=CGRID_NE)
+     call pass_var(ML%HI_filtered, ML%CNN_Domain)
+     call pass_var(ML%SW_filtered, ML%CNN_Domain)
+     call pass_var(ML%TS_filtered, ML%CNN_Domain)
+     call pass_var(ML%SSS_filtered, ML%CNN_Domain)        
+     call pass_var(ML%land_mask, ML%CNN_Domain)
+
+     IN_CNN = 0.0
+     ! Combine arrays for the CNN and normalize
+     do j=jsdw,jedw ; do i=isdw,iedw
+        IN_CNN(1,i,j) = ML%land_mask(i,j) * ((ML%SIC_filtered(i,j) - sic_mu)*sic_std)
+        IN_CNN(2,i,j) = ML%land_mask(i,j) * ((ML%SST_filtered(i,j) - sst_mu)*sst_std)
+        IN_CNN(3,i,j) = ML%land_mask(i,j) * ((ML%UI_filtered(i,j) - ui_mu)*ui_std)
+        IN_CNN(4,i,j) = ML%land_mask(i,j) * ((ML%VI_filtered(i,j) - vi_mu)*vi_std)
+        IN_CNN(5,i,j) = ML%land_mask(i,j) * ((ML%HI_filtered(i,j) - hi_mu)*hi_std)
+        IN_CNN(6,i,j) = ML%land_mask(i,j) * ((ML%SW_filtered(i,j) - sw_mu)*sw_std)
+        IN_CNN(7,i,j) = ML%land_mask(i,j) * ((ML%TS_filtered(i,j) - ts_mu)*ts_std)
+        IN_CNN(8,i,j) = ML%land_mask(i,j) * ((ML%SSS_filtered(i,j) - sss_mu)*sss_std)
+        IN_CNN(9,i,j) = ML%land_mask(i,j)
+     enddo ; enddo
+
+     dSIC = 0.0
+     call CNN_forward(IN_CNN, dSIC, ML%CNN_weight_vec1, ML%CNN_weight_vec2, ML%CNN_weight_vec3, ML%CNN_weight_vec4, G)
+
+     IN_ANN = 0.0
+     do j=js,je ; do i=is,ie
+        IN_ANN(1,i,j) = G%mask2dT(i,j) * ((dSIC(i,j) - dsic_mu)*dsic_std)
+        IN_ANN(2,i,j) = G%mask2dT(i,j) * ((ML%CN_filtered(i,j,1) - cn1_mu)*cn1_std)
+        IN_ANN(3,i,j) = G%mask2dT(i,j) * ((ML%CN_filtered(i,j,2) - cn2_mu)*cn2_std)
+        IN_ANN(4,i,j) = G%mask2dT(i,j) * ((ML%CN_filtered(i,j,3) - cn3_mu)*cn3_std)
+        IN_ANN(5,i,j) = G%mask2dT(i,j) * ((ML%CN_filtered(i,j,4) - cn4_mu)*cn4_std)
+        IN_ANN(6,i,j) = G%mask2dT(i,j) * ((ML%CN_filtered(i,j,5) - cn5_mu)*cn5_std)
+        IN_ANN(7,i,j) = G%mask2dT(i,j)
+     enddo; enddo
+
+     dCN = 0.0
+     call ANN_forward(IN_ANN, dCN, ML%ANN_weight_vec1, ML%ANN_weight_vec2, ML%ANN_weight_vec3, ML%ANN_weight_vec4, G)
+
+     do j=js,je ; do i=is,ie
+        do k=1,ncat
+           dCN(k,i,j) = G%mask2dT(i,j) * (dCN(k,i,j)*scale)
+        enddo
+     enddo; enddo
+
+     call postprocess(IST, dCN, G, IG)
+
      ML%SIC_filtered(:,:) = 0.0
      ML%SST_filtered(:,:) = 0.0
      ML%UI_filtered(:,:) = 0.0
@@ -633,8 +628,10 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
      ML%TS_filtered(:,:) = 0.0
      ML%SSS_filtered(:,:) = 0.0
      ML%CN_filtered(:,:,:) = 0.0
-     ML%count = 1.
+     ML%count = 0.
   endif
+
+  ML%count = ML%count + 1.
 
 end subroutine ML_inference
 
