@@ -92,7 +92,8 @@ type, public :: ML_CS ; private
   real, pointer :: &
        count => NULL() !< keeps track of 5-day time window for averaging
   real, dimension(:,:,:), pointer :: &
-       CN_filtered => NULL()       !< Time-filtered category sea ice concentration [nondim]
+       CN_filtered => NULL(), &    !< Time-filtered category sea ice concentration [nondim]
+       dCN => NULL()               !< Category sea ice concentration increments [nondim]
   real, dimension(:,:), pointer :: &
        SIC_filtered => NULL(), &  !< Time-filtered aggregate sea ice concentration [nondim]
        SST_filtered => NULL(), &  !< Time-filtered sea-surface temperature [degC]
@@ -177,6 +178,7 @@ subroutine ML_init(Time,G,param_file,diag,CS)
   allocate(CS%SSS_filtered(CS%isdw:CS%iedw,CS%jsdw:CS%jedw), source=0.)
   allocate(CS%land_mask(CS%isdw:CS%iedw,CS%jsdw:CS%jedw), source=0.)
   allocate(CS%CN_filtered(G%isc:G%iec,G%jsc:G%jec,5), source=0.)
+  allocate(CS%dCN(5,G%isc:G%iec,G%jsc:G%jec), source=0.)
   allocate(CS%count, source=1.)
 
 end subroutine ML_init
@@ -186,6 +188,7 @@ subroutine register_ML_restarts(CS, Ice_restart)
   type(SIS_restart_CS),    pointer       :: Ice_restart !< A pointer to the restart type for the ice
 
   call register_restart_field(Ice_restart, 'running_mean_cn',  CS%CN_filtered, units='none', mandatory=.false.)
+  call register_restart_field(Ice_restart, 'ML_increments',    CS%dCN,         units='none', mandatory=.false.)
   call register_restart_field(Ice_restart, 'running_mean_sic', CS%SIC_filtered, units='none', mandatory=.false.)
   call register_restart_field(Ice_restart, 'running_mean_sst', CS%SST_filtered, units='deg C', mandatory=.false.)
   call register_restart_field(Ice_restart, 'running_mean_ui',  CS%UI_filtered, units='m s-1', mandatory=.false.)
@@ -337,11 +340,12 @@ subroutine ANN_forward(IN, OUT, weights1, weights2, weights3, weights4, G)
 
 end subroutine ANN_forward
 
-subroutine postprocess(IST, dCN, G, IG)
+subroutine postprocess(IST, dCN, G, IG, scale)
   type(ice_state_type),       intent(inout)  :: IST     !< A type describing the state of the sea ice
   real, dimension(:,:,:),     intent(in)     :: dCN     !< predicted category increments
   type(SIS_hor_grid_type),    intent(in)     :: G       !< The horizontal grid structure
   type(ice_grid_type),        intent(in)     :: IG      !< Sea ice specific grid
+  real,                       intent(in)     :: scale   !< timestep-dependent scaling of increments
 
   real, dimension(SZI_(G),SZJ_(G),0:5) &
        :: posterior  !< updated part_size (bounded between 0 and 1)
@@ -372,7 +376,8 @@ subroutine postprocess(IST, dCN, G, IG)
   posterior = 0.0
   do j=js,je ; do i=is,ie
      do k=1,ncat
-        posterior(i,j,k) = IST%part_size(i,j,k) + dCN(k,i,j)
+        IST%dCN(i,j,k) = G%mask2dT(i,j) * (dCN(k,i,j)*scale)
+        posterior(i,j,k) = IST%part_size(i,j,k) + IST%dCN(i,j,k)
      enddo
      
      do
@@ -474,8 +479,6 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
 
   real, dimension(SZI_(G),SZJ_(G)) &
                                    :: dSIC       !< CNN predictions of aggregate SIC corrections
-  real, dimension(5,SZI_(G),SZJ_(G)) &
-                                   :: dCN        !< ANN predictions of category SIC corrections
   real, dimension(SZI_(G),SZJ_(G)) &
                                    :: net_sw     !< net shortwave radiation [Wm-2]
   
@@ -525,13 +528,16 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
   call get_SIS2_thermo_coefs(IST%ITV, rho_ice=rho_ice)
 
   irho_ice = 1/rho_ice
-  scale = ML%ML_freq/432000.0 !Network was trained on 5-day (432000-second) increments
+  scale = dt_slow/432000.0 !Network was trained on 5-day (432000-second) increments
   nsteps = ML%ML_freq/dt_slow !number of timesteps in ML%ML_freq
   nsteps_i = dt_slow/ML%ML_freq
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; ncat = IG%CatIce ; nlay = IG%NkIce
   isdw = ML%isdw; iedw = ML%iedw; jsdw = ML%jsdw; jedw = ML%jedw
   nb = size(FIA%flux_sw_top,4)
 
+  !in the first nsteps, ML%dCN is zero, so this does nothing
+  call postprocess(IST, ML%dCN, G, IG, scale)
+  
   net_sw = 0.0
   do j=js,je ; do i=is,ie !compute net shortwave
      do k=0,ncat
@@ -545,6 +551,7 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
 
   call pass_vector(IST%u_ice_C, IST%v_ice_C, G%Domain, stagger=CGRID_NE)
 
+  !weighted sum of inputs over nsteps, to produce an n-day mean
   cvr = 0.0
   do j=js,je ; do i=is,ie
      sit = 0.0
@@ -608,16 +615,7 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
         IN_ANN(7,i,j) = G%mask2dT(i,j)
      enddo; enddo
 
-     dCN = 0.0
-     call ANN_forward(IN_ANN, dCN, ML%ANN_weight_vec1, ML%ANN_weight_vec2, ML%ANN_weight_vec3, ML%ANN_weight_vec4, G)
-
-     do j=js,je ; do i=is,ie
-        do k=1,ncat
-           dCN(k,i,j) = G%mask2dT(i,j) * (dCN(k,i,j)*scale)
-        enddo
-     enddo; enddo
-
-     call postprocess(IST, dCN, G, IG)
+     call ANN_forward(IN_ANN, ML%dCN, ML%ANN_weight_vec1, ML%ANN_weight_vec2, ML%ANN_weight_vec3, ML%ANN_weight_vec4, G)
 
      ML%SIC_filtered(:,:) = 0.0
      ML%SST_filtered(:,:) = 0.0
