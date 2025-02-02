@@ -617,7 +617,7 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
 
      do j=js,je ; do i=is,ie
         do k=1,ncat
-           ML%dCN_restart(i,j,k) = G%mask2dT(i,j) * (2*dCN(i,j,k)*scale) !this works, but why do we need 2* scaling factor????
+           ML%dCN_restart(i,j,k) = G%mask2dT(i,j) * (2*dCN(i,j,k)*scale) !why do we need this 2x scaling??
         enddo
      enddo; enddo
 
@@ -651,7 +651,7 @@ subroutine ML_end(CS)
   deallocate(CS%SSS_filtered)
   deallocate(CS%land_mask)
   deallocate(CS%CN_filtered)
-  !deallocate(CS%dCN_restart)
+  deallocate(CS%dCN_restart)
   deallocate(CS%count)
 end subroutine ML_end
 
