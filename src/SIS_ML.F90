@@ -29,7 +29,6 @@ use SIS_diag_mediator,         only : SIS_diag_ctrl
 use SIS2_ice_thm,              only : get_SIS2_thermo_coefs
 use SIS_restart,               only : register_restart_field, SIS_restart_CS
 use SIS_types,                 only : ice_state_type, ocean_sfc_state_type, fast_ice_avg_type, ice_ocean_flux_type
-use MOM_diag_mediator,         only : time_type
 use MOM_file_parser,           only : get_param, param_file_type
 
 implicit none; private
@@ -64,7 +63,7 @@ implicit none; private
 public :: ML_init,register_ML_restarts,ML_inference,ML_end
 
 !> Control structure for ML model
-type, public :: ML_CS ; private
+type, public :: ML_CS
   type(MOM_domain_type), pointer :: CNN_Domain => NULL()  !< Domain for inputs/outputs for the CNN
   integer :: isdw !< The lower i-memory limit for the wide halo arrays.
   integer :: iedw !< The upper i-memory limit for the wide halo arrays.
@@ -84,16 +83,15 @@ type, public :: ML_CS ; private
   real, dimension(2048)  :: ANN_weight_vec2 !< 32 x 64
   real, dimension(8192)  :: ANN_weight_vec3 !< 64 x 128
   real, dimension(640)   :: ANN_weight_vec4 !< 128 x 5
-
-  character(len=120)  :: restart_file !< name of ice restart file(s)
+  
   character(len=300)  :: CNN_weights !< filename of CNN weights netcdf file
   character(len=300)  :: ANN_weights !< filename of ANN weights netcdf file
 
-  real, pointer :: &
+  real, public, pointer :: &
        count => NULL() !< keeps track of 5-day time window for averaging
   real, dimension(:,:,:), pointer :: &
-       CN_filtered => NULL()      !< Time-filtered category sea ice concentration [nondim]
-       !dCN_restart => NULL()               !< Category sea ice concentration increments [nondim]
+       CN_filtered => NULL(), &      !< Time-filtered category sea ice concentration [nondim]
+       dCN_restart => NULL()         !< Category sea ice concentration increments [nondim]
   real, dimension(:,:), pointer :: &
        SIC_filtered => NULL(), &  !< Time-filtered aggregate sea ice concentration [nondim]
        SST_filtered => NULL(), &  !< Time-filtered sea-surface temperature [degC]
@@ -115,8 +113,7 @@ end type ML_CS
 contains
 
 !> Initialize ML routine and load CNN+ANN weights
-subroutine ML_init(Time,G,param_file,diag,CS)
-  type(time_type),               intent(in)    :: Time       !< The current model time.
+subroutine ML_init(G,param_file,diag,CS)
   type(SIS_hor_grid_type),       intent(in)    :: G          !< The horizontal grid structure.
   type(param_file_type),         intent(in)    :: param_file !< Parameter file parser structure.
   type(SIS_diag_ctrl), target,   intent(inout) :: diag       !< Diagnostics structure.
@@ -129,9 +126,6 @@ subroutine ML_init(Time,G,param_file,diag,CS)
 
   ! Register fields for output from this module.
   CS%diag => diag
-
-  call get_param(param_file, mdl, "RESTARTFILE", CS%restart_file, &
-                 "The name of the restart file.", default="ice_model.res.nc")
 
   call get_param(param_file, mdl, "CNN_HALO_SIZE", CS%CNN_halo_size, &
       "Halo size at each side of subdomains, depends on CNN architecture.", & 
@@ -178,7 +172,7 @@ subroutine ML_init(Time,G,param_file,diag,CS)
   allocate(CS%SSS_filtered(CS%isdw:CS%iedw,CS%jsdw:CS%jedw), source=0.)
   allocate(CS%land_mask(CS%isdw:CS%iedw,CS%jsdw:CS%jedw), source=0.)
   allocate(CS%CN_filtered(G%isc:G%iec,G%jsc:G%jec,5), source=0.)
-  !allocate(CS%dCN_restart(G%isc:G%iec,G%jsc:G%jec,5), source=0.)
+  allocate(CS%dCN_restart(G%isc:G%iec,G%jsc:G%jec,5), source=0.)
   allocate(CS%count, source=1.)
 
 end subroutine ML_init
@@ -188,7 +182,7 @@ subroutine register_ML_restarts(CS, Ice_restart)
   type(SIS_restart_CS),    pointer       :: Ice_restart !< A pointer to the restart type for the ice
 
   call register_restart_field(Ice_restart, 'running_mean_cn',  CS%CN_filtered, units='none', mandatory=.false.)
-  !call register_restart_field(Ice_restart, 'increments',       CS%dCN_restart, units='none', mandatory=.false.)
+  call register_restart_field(Ice_restart, 'part_size_increments', CS%dCN_restart, units='none', mandatory=.false.)
   call register_restart_field(Ice_restart, 'running_mean_sic', CS%SIC_filtered, units='none', mandatory=.false.)
   call register_restart_field(Ice_restart, 'running_mean_sst', CS%SST_filtered, units='deg C', mandatory=.false.)
   call register_restart_field(Ice_restart, 'running_mean_ui',  CS%UI_filtered, units='m s-1', mandatory=.false.)
@@ -340,8 +334,9 @@ subroutine ANN_forward(IN, OUT, weights1, weights2, weights3, weights4, G)
 
 end subroutine ANN_forward
 
-subroutine postprocess(IST, G, IG)
+subroutine postprocess(IST, increments, G, IG)
   type(ice_state_type),       intent(inout)  :: IST     !< A type describing the state of the sea ice
+  real, dimension(:,:,:),     intent(in)     :: increments !< ML-predicted increments
   type(SIS_hor_grid_type),    intent(in)     :: G       !< The horizontal grid structure
   type(ice_grid_type),        intent(in)     :: IG      !< Sea ice specific grid
 
@@ -374,7 +369,8 @@ subroutine postprocess(IST, G, IG)
   posterior = 0.0
   do j=js,je ; do i=is,ie
      do k=1,ncat
-        posterior(i,j,k) = IST%part_size(i,j,k) + IST%dCN(i,j,k)
+        IST%dCN(i,j,k) = increments(i,j,k) !save for diag
+        posterior(i,j,k) = IST%part_size(i,j,k) + increments(i,j,k)
      enddo
      
      do
@@ -535,13 +531,8 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
   nb = size(FIA%flux_sw_top,4)
 
   !in the first nsteps, ML%dCN_restart is zero, so this does nothing
-  !do j=js,je ; do i=is,ie
-  !   do k=1,ncat
-  !      IST%dCN(i,j,k) = ML%dCN_restart(i,j,k)
-  !   enddo
-  !enddo ; enddo
   if ( ML%count /= nsteps ) then
-     call postprocess(IST, G, IG)
+     call postprocess(IST, ML%dCN_restart, G, IG)
   endif
   
   net_sw = 0.0
@@ -582,7 +573,7 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
   enddo; enddo
 
   if ( ML%count == nsteps ) then !nsteps have passed, do inference
-     
+
      ! Update the wide halos
      call pass_var(ML%SIC_filtered, ML%CNN_Domain)
      call pass_var(ML%SST_filtered, ML%CNN_Domain)
@@ -626,12 +617,11 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
 
      do j=js,je ; do i=is,ie
         do k=1,ncat
-           !ML%dCN_restart(i,j,k) = G%mask2dT(i,j) * (dCN(i,j,k)*scale)
-           IST%dCN(i,j,k) = G%mask2dT(i,j) * (dCN(i,j,k)*scale)
+           ML%dCN_restart(i,j,k) = G%mask2dT(i,j) * (2*dCN(i,j,k)*scale) !this works, but why do we need 2* scaling factor????
         enddo
      enddo; enddo
 
-     call postprocess(IST, G, IG)
+     call postprocess(IST, ML%dCN_restart, G, IG)
      
      ML%SIC_filtered(:,:) = 0.0
      ML%SST_filtered(:,:) = 0.0

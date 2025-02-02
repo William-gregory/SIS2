@@ -1594,7 +1594,7 @@ subroutine SIS_slow_thermo_init(Time, G, US, IG, param_file, diag, CS, tracer_fl
   call get_param(param_file, mdl, "DO_ML", CS%do_ML, &
   "Perform machine learning based bias correction.", default=.false.)
   if ( CS%do_ML ) then
-     call ML_init(Time, G, param_file, diag, CS%ML)
+     call ML_init(G, param_file, diag, CS%ML)
      call register_ML_restarts(CS%ML, Ice_restart)
   endif
   !!! WG END !!!
