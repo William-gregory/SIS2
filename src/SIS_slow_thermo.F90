@@ -70,8 +70,8 @@ use SIS_transport, only : adjust_ice_categories, SIS_transport_CS
 use SIS_tracer_flow_control, only : SIS_tracer_flow_control_CS
 use SIS_tracer_registry, only : SIS_unpack_passive_ice_tr, SIS_repack_passive_ice_tr
 use SIS_tracer_registry, only : SIS_count_passive_tracers
-use SIS_ML,              only : ML_CS,ML_init,ML_inference,register_ML_restarts,ML_end !WG
-use fms_io_mod,          only : restart_file_type
+use SIS_ML,              only : ML_CS,ML_init,ML_inference,register_ML_restarts !WG
+use fms_io_mod,          only : restart_file_type !WG
 
 implicit none ; private
 
@@ -464,8 +464,11 @@ subroutine slow_thermodynamics(IST, dt_slow, CS, OSS, FIA, XSF, IOF, G, IG)
 
   !  Other routines that do thermodynamic vertical processes should be added here
   !!! WG !!!
-  if (CS%do_ML) &       
+  if (CS%do_ML) then
+       call enable_SIS_averaging(dt_slow, CS%Time, CS%ML%diag)
        call ML_inference(IST, OSS, FIA, IOF, G, IG, CS%ML, dt_slow)
+       call disable_SIS_averaging(CS%ML%diag)
+  endif
   !!! WG end !!!
 
   ! Do tracer column physics
@@ -1551,10 +1554,6 @@ subroutine SIS_slow_thermo_end (CS)
   type(slow_thermo_CS), pointer :: CS   !< The control structure for the SIS_slow_thermo module
                                         !! that is deallocated here
 
-  if ( CS%do_ML ) then !WG
-     call ML_end(CS%ML)
-  endif
-  
   call SIS2_ice_thm_end(CS%ice_thm_CSp)
   
   if (associated(CS)) deallocate(CS)

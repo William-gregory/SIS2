@@ -75,7 +75,6 @@ type ice_state_type
     mH_pond, &  !< The mass per unit area of the pond in each category [H ~> kg m-2].
     mH_snow, &  !< The mass per unit area of the snow in each category [H ~> kg m-2].
     mH_ice, &   !< The mass per unit area of the ice in each category [H ~> kg m-2].
-    dCN, &      !< ML-based correction to category ice concentrations [nondim] !WG
     t_surf      !< The surface temperature [Kelvin].
 
   real, allocatable, dimension(:,:) :: &
@@ -436,7 +435,6 @@ subroutine alloc_IST_arrays(HI, IG, IST, omit_velocities, omit_Tsurf, do_ridging
 
   IST%valid_IST = .true.
   allocate(IST%part_size(isd:ied, jsd:jed, 0:CatIce)) ; IST%part_size(:,:,:) = 0.0
-  allocate(IST%dCN(      isd:ied, jsd:jed, CatIce)) ; IST%dCN(:,:,:) = 0.0 !WG
   allocate(IST%mH_pond(  isd:ied, jsd:jed, CatIce)) ; IST%mH_pond(:,:,:) = 0.0
   allocate(IST%mH_snow(  isd:ied, jsd:jed, CatIce)) ; IST%mH_snow(:,:,:) = 0.0
   allocate(IST%enth_snow(isd:ied, jsd:jed, CatIce, 1)) ; IST%enth_snow(:,:,:,:) = 0.0
@@ -1031,7 +1029,6 @@ subroutine copy_IST_to_IST(IST_in, IST_out, HI_in, HI_out, IG)
     IST_out%mH_pond(i2,j2,k) = IST_in%mH_pond(i,j,k)
     IST_out%mH_snow(i2,j2,k) = IST_in%mH_snow(i,j,k)
     IST_out%mH_ice(i2,j2,k) = IST_in%mH_ice(i,j,k)
-    IST_out%dCN(i2,j2,k) = IST_in%dCN(i,j,k) !WG
 
     IST_out%enth_snow(i2,j2,k,1) = IST_in%enth_snow(i,j,k,1)
   enddo ; enddo ; enddo
@@ -1064,8 +1061,6 @@ subroutine redistribute_IST_to_IST(IST_in, IST_out, domain_in, domain_out)
   if (associated(IST_out) .and. associated(IST_in)) then
     call mpp_redistribute(domain_in, IST_in%part_size, domain_out, &
                           IST_out%part_size, complete=.true.)
-    call mpp_redistribute(domain_in, IST_in%dCN, domain_out, &
-                          IST_out%dCN, complete=.false.) !WG
 
     if (allocated(IST_out%t_surf) .or. allocated(IST_in%t_surf)) then
       call mpp_redistribute(domain_in, IST_in%t_surf, domain_out, &
@@ -2011,7 +2006,6 @@ subroutine dealloc_IST_arrays(IST)
 
   deallocate(IST%part_size, IST%mH_snow, IST%mH_ice)
   deallocate(IST%mH_pond) ! mw/new
-  deallocate(IST%dCN) !WG
   deallocate(IST%enth_snow, IST%enth_ice, IST%sal_ice)
   if (allocated(IST%snow_to_ocn)) deallocate(IST%snow_to_ocn)
   if (allocated(IST%enth_snow_to_ocn)) deallocate(IST%enth_snow_to_ocn)

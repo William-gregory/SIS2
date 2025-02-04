@@ -28,10 +28,13 @@ use fms_io_mod,                only : register_restart_field, restart_file_type,
 use MOM_domains,               only : clone_MOM_domain,MOM_domain_type
 use MOM_domains,               only : pass_var, pass_vector, CGRID_NE
 use SIS_diag_mediator,         only : SIS_diag_ctrl
+use SIS_diag_mediator,         only : register_diag_field=>register_SIS_diag_field
+use SIS_diag_mediator,         only : post_SIS_data, post_data=>post_SIS_data
 use SIS2_ice_thm,              only : get_SIS2_thermo_coefs
 use SIS_types,                 only : ice_state_type, ocean_sfc_state_type, fast_ice_avg_type, ice_ocean_flux_type
-use MOM_diag_mediator,         only : time_type
 use MOM_file_parser,           only : get_param, param_file_type
+use MOM_time_manager,          only : time_type
+
 
 implicit none; private
 
@@ -62,10 +65,10 @@ implicit none; private
 #  define SZJBW_(G) G%jsdw-1:G%jedw
 #endif
 
-public :: ML_init,register_ML_restarts,ML_inference,ML_end
+public :: ML_init,register_ML_restarts,ML_inference
 
 !> Control structure for ML model
-type, public :: ML_CS ; private
+type, public :: ML_CS
   type(MOM_domain_type), pointer :: CNN_Domain => NULL()  !< Domain for inputs/outputs for the CNN
   integer :: isdw !< The lower i-memory limit for the wide halo arrays.
   integer :: iedw !< The upper i-memory limit for the wide halo arrays.
@@ -90,24 +93,24 @@ type, public :: ML_CS ; private
   character(len=300)  :: CNN_weights !< filename of CNN weights netcdf file
   character(len=300)  :: ANN_weights !< filename of ANN weights netcdf file
 
-  real, pointer :: &
-       count => NULL() !< keeps track of 5-day time window for averaging
-  real, dimension(:,:,:), pointer :: &
-       CN_filtered => NULL()      !< Time-filtered category sea ice concentration [nondim]
-  real, dimension(:,:), pointer :: &
-       SIC_filtered => NULL(), &  !< Time-filtered aggregate sea ice concentration [nondim]
-       SST_filtered => NULL(), &  !< Time-filtered sea-surface temperature [degC]
-       UI_filtered => NULL(), &   !< Time-filtered zonal ice velocities [ms-1]
-       VI_filtered => NULL(), &   !< Time-filtered meridional ice velocities [degC]
-       HI_filtered => NULL(), &   !< Time-filtered ice thickness [m]
-       SW_filtered => NULL(), &   !< Time-filtered net shortwave radiation [Wm-2]
-       TS_filtered => NULL(), &   !< Time-filtered ice-surface skin temperature [degC]
-       SSS_filtered => NULL(), &  !< Time-filtered sea-surface salinity [psu]
-       land_mask => NULL()        !< Land-sea mask [land cells = 0, ocean cells = 1] 
+  real :: count !< keeps track of 5-day time window for averaging
+  real, dimension(:,:,:), allocatable :: &
+       CN_filtered, &      !< Time-filtered category sea ice concentration [nondim]
+       dCN_restart         !< Category sea ice concentration increments [nondim]
+  real, dimension(:,:), allocatable :: &
+       SIC_filtered, &  !< Time-filtered aggregate sea ice concentration [nondim]
+       SST_filtered, &  !< Time-filtered sea-surface temperature [degC]
+       UI_filtered, &   !< Time-filtered zonal ice velocities [ms-1]
+       VI_filtered, &   !< Time-filtered meridional ice velocities [degC]
+       HI_filtered, &   !< Time-filtered ice thickness [m]
+       SW_filtered, &   !< Time-filtered net shortwave radiation [Wm-2]
+       TS_filtered, &   !< Time-filtered ice-surface skin temperature [degC]
+       SSS_filtered, &  !< Time-filtered sea-surface salinity [psu]
+       land_mask        !< Land-sea mask [land cells = 0, ocean cells = 1]
   
   type(SIS_diag_ctrl), pointer :: diag => NULL() !< A type that regulates diagnostics output
   !>@{ Diagnostic handles
-  integer :: id_dCN = -1
+  integer :: id_dcn = -1
   !>@}
   
 end type ML_CS
@@ -115,8 +118,8 @@ end type ML_CS
 contains
 
 !> Initialize ML routine and load CNN+ANN weights
-subroutine ML_init(Time,G,param_file,diag,CS)
-  type(time_type),               intent(in)    :: Time       !< The current model time.
+subroutine ML_init(Time, G, param_file, diag, CS)
+  type(time_type),               intent(in)    :: Time       !< Current model time  
   type(SIS_hor_grid_type),       intent(in)    :: G          !< The horizontal grid structure.
   type(param_file_type),         intent(in)    :: param_file !< Parameter file parser structure.
   type(SIS_diag_ctrl), target,   intent(inout) :: diag       !< Diagnostics structure.
@@ -129,6 +132,8 @@ subroutine ML_init(Time,G,param_file,diag,CS)
 
   ! Register fields for output from this module.
   CS%diag => diag
+  CS%id_dcn    = register_diag_field('ice_model', 'dCN', diag%axesTc, Time, &
+               'ML-based correction to ice concentration', 'area fraction', missing_value=missing)
 
   call get_param(param_file, mdl, "RESTARTFILE", CS%restart_file, &
                  "The name of the restart file.", default="ice_model.res.nc")
@@ -167,17 +172,29 @@ subroutine ML_init(Time,G,param_file,diag,CS)
   CS%isdw = G%isc-wd_halos(1) ; CS%iedw = G%iec+wd_halos(1)
   CS%jsdw = G%jsc-wd_halos(2) ; CS%jedw = G%jec+wd_halos(2)
 
-  allocate(CS%SIC_filtered(CS%isdw:CS%iedw,CS%jsdw:CS%jedw)) ; CS%SIC_filtered(:,:) = 0.
-  allocate(CS%SST_filtered(CS%isdw:CS%iedw,CS%jsdw:CS%jedw)) ; CS%SST_filtered(:,:) = 0.
-  allocate(CS%UI_filtered(CS%isdw:CS%iedw,CS%jsdw:CS%jedw))  ; CS%UI_filtered(:,:) = 0.
-  allocate(CS%VI_filtered(CS%isdw:CS%iedw,CS%jsdw:CS%jedw))  ; CS%VI_filtered(:,:) = 0.
-  allocate(CS%HI_filtered(CS%isdw:CS%iedw,CS%jsdw:CS%jedw))  ; CS%HI_filtered(:,:) = 0.
-  allocate(CS%SW_filtered(CS%isdw:CS%iedw,CS%jsdw:CS%jedw))  ; CS%SW_filtered(:,:) = 0.
-  allocate(CS%TS_filtered(CS%isdw:CS%iedw,CS%jsdw:CS%jedw))  ; CS%TS_filtered(:,:) = 0.
-  allocate(CS%SSS_filtered(CS%isdw:CS%iedw,CS%jsdw:CS%jedw)) ; CS%SSS_filtered(:,:) = 0.
-  allocate(CS%land_mask(CS%isdw:CS%iedw,CS%jsdw:CS%jedw))    ; CS%land_mask(:,:) = 0.
-  allocate(CS%CN_filtered(G%isc:G%iec,G%jsc:G%jec,5))        ; CS%CN_filtered(:,:,:) = 0.
-  allocate(CS%count)                                         ; CS%count = 1.
+  if (.not. allocated(CS%SIC_filtered)) &
+       allocate(CS%SIC_filtered(CS%isdw:CS%iedw,CS%jsdw:CS%jedw), source=0.)
+  if (.not. allocated(CS%SST_filtered))	&
+       allocate(CS%SST_filtered(CS%isdw:CS%iedw,CS%jsdw:CS%jedw), source=0.)
+  if (.not. allocated(CS%UI_filtered))	&
+       allocate(CS%UI_filtered(CS%isdw:CS%iedw,CS%jsdw:CS%jedw), source=0.)
+  if (.not. allocated(CS%VI_filtered))	&
+       allocate(CS%VI_filtered(CS%isdw:CS%iedw,CS%jsdw:CS%jedw), source=0.)
+  if (.not. allocated(CS%SW_filtered))	&
+       allocate(CS%HI_filtered(CS%isdw:CS%iedw,CS%jsdw:CS%jedw), source=0.)
+  if (.not. allocated(CS%SW_filtered))	&
+       allocate(CS%SW_filtered(CS%isdw:CS%iedw,CS%jsdw:CS%jedw), source=0.)
+  if (.not. allocated(CS%TS_filtered))	&
+       allocate(CS%TS_filtered(CS%isdw:CS%iedw,CS%jsdw:CS%jedw), source=0.)
+  if (.not. allocated(CS%SSS_filtered))	&
+       allocate(CS%SSS_filtered(CS%isdw:CS%iedw,CS%jsdw:CS%jedw), source=0.)
+  if (.not. allocated(CS%land_mask))	&
+       allocate(CS%land_mask(CS%isdw:CS%iedw,CS%jsdw:CS%jedw), source=0.)
+  if (.not. allocated(CS%CN_filtered))	&
+       allocate(CS%CN_filtered(G%isc:G%iec,G%jsc:G%jec,5), source=0.)
+  !if (.not. allocated(CS%dCN_restart))	&
+  !     allocate(CS%dCN_restart(G%isc:G%iec,G%jsc:G%jec,5), source=0.)
+  CS%count = 1.
 
 end subroutine ML_init
 
@@ -187,13 +204,14 @@ subroutine register_ML_restarts(CS, G, Ice_restart, restart_dir)
   type(restart_file_type), pointer       :: Ice_restart !< A pointer to the restart type for the ice
   character(len=*),        intent(in)    :: restart_dir !< A directory in which to find the restart file
 
-  integer :: id_cn, id_sic, id_sst, id_ui, id_vi, id_hi, id_sw, id_ts, id_sss, id_cnt
+  integer :: id_cn, id_dcn, id_sic, id_sst, id_ui, id_vi, id_hi, id_sw, id_ts, id_sss, id_cnt
   type(domain2d), pointer :: mpp_domain => NULL()
   type(domain2d), pointer :: mpp_wh_domain => NULL()
   mpp_domain => G%Domain%mpp_domain
   mpp_wh_domain => CS%CNN_Domain%mpp_domain
 
   id_cn = register_restart_field(Ice_restart, trim(CS%restart_file), 'running_mean_cn',  CS%CN_filtered, domain=mpp_domain, mandatory=.false.)
+  !id_dcn = register_restart_field(Ice_restart, trim(CS%restart_file), 'part_size_increments',  CS%dCN_restart, domain=mpp_domain, mandatory=.false.)
   id_sic = register_restart_field(Ice_restart, trim(CS%restart_file), 'running_mean_sic', CS%SIC_filtered, domain=mpp_wh_domain, mandatory=.false.)
   id_sst = register_restart_field(Ice_restart, trim(CS%restart_file), 'running_mean_sst', CS%SST_filtered, domain=mpp_wh_domain, mandatory=.false.)
   id_ui = register_restart_field(Ice_restart, trim(CS%restart_file), 'running_mean_ui',  CS%UI_filtered, domain=mpp_wh_domain, mandatory=.false.)
@@ -205,6 +223,7 @@ subroutine register_ML_restarts(CS, G, Ice_restart, restart_dir)
   id_cnt = register_restart_field(Ice_restart, trim(CS%restart_file), 'day_counter', CS%count, mandatory=.false.)
 
   call restore_state(Ice_restart, id_cn, restart_dir, nonfatal_missing_files=.true.)
+  !call restore_state(Ice_restart, id_dcn, restart_dir, nonfatal_missing_files=.true.)
   call restore_state(Ice_restart, id_sic, restart_dir, nonfatal_missing_files=.true.)
   call restore_state(Ice_restart, id_sst, restart_dir, nonfatal_missing_files=.true.)
   call restore_state(Ice_restart, id_ui, restart_dir, nonfatal_missing_files=.true.)
@@ -347,8 +366,8 @@ subroutine ANN_forward(IN, OUT, weights1, weights2, weights3, weights4, G)
      enddo
      z = 1
      do x=1,128
-        do y=1,SIZE(OUT,1)
-           OUT(y,i,j) = OUT(y,i,j) + (max(0.0,tmp3(x))*weights4(z))
+        do y=1,SIZE(OUT,3)
+           OUT(i,j,y) = OUT(i,j,y) + (max(0.0,tmp3(x))*weights4(z))
            z = z + 1
         enddo
      enddo
@@ -356,8 +375,9 @@ subroutine ANN_forward(IN, OUT, weights1, weights2, weights3, weights4, G)
 
 end subroutine ANN_forward
 
-subroutine postprocess(IST, G, IG)
+subroutine postprocess(IST, increments, G, IG)
   type(ice_state_type),       intent(inout)  :: IST     !< A type describing the state of the sea ice
+  real, dimension(:,:,:), target,intent(in)  :: increments !< ML-predicted increments
   type(SIS_hor_grid_type),    intent(in)     :: G       !< The horizontal grid structure
   type(ice_grid_type),        intent(in)     :: IG      !< Sea ice specific grid
 
@@ -390,7 +410,7 @@ subroutine postprocess(IST, G, IG)
   posterior = 0.0
   do j=js,je ; do i=is,ie
      do k=1,ncat
-        posterior(i,j,k) = IST%part_size(i,j,k) + IST%dCN(i,j,k)
+        posterior(i,j,k) = IST%part_size(i,j,k) + increments(i,j,k)
      enddo
      
      do
@@ -492,7 +512,7 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
 
   real, dimension(SZI_(G),SZJ_(G)) &
                                    :: dSIC       !< CNN predictions of aggregate SIC corrections
-  real, dimension(5,SZI_(G),SZJ_(G)) &
+  real, dimension(SZI_(G),SZJ_(G),5) &
                                    :: dCN        !< ANN predictions of category SIC corrections
   real, dimension(SZI_(G),SZJ_(G)) &
                                    :: net_sw     !< net shortwave radiation [Wm-2]
@@ -543,13 +563,18 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
   call get_SIS2_thermo_coefs(IST%ITV, rho_ice=rho_ice)
 
   irho_ice = 1/rho_ice
-  scale = dt_slow/432000.0 !Network was trained on 5-day (432000-second) increments
+  scale = ML%ML_freq/432000.0 !Network was trained on 5-day (432000-second) increments
   nsteps = ML%ML_freq/dt_slow !number of timesteps in ML%ML_freq
   nsteps_i = dt_slow/ML%ML_freq
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; ncat = IG%CatIce ; nlay = IG%NkIce
   isdw = ML%isdw; iedw = ML%iedw; jsdw = ML%jsdw; jedw = ML%jedw
   nb = size(FIA%flux_sw_top,4)
-     
+  dCN = 0.0
+
+  !if ( (.not. all(ML%dCN_restart==0.)) .and. (ML%count /= nsteps) ) then
+  !   call postprocess(IST, ML%dCN_restart, G, IG)
+  !endif
+
   net_sw = 0.0
   do j=js,je ; do i=is,ie !compute net shortwave
      do k=0,ncat
@@ -562,8 +587,8 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
   enddo; enddo
 
   call pass_vector(IST%u_ice_C, IST%v_ice_C, G%Domain, stagger=CGRID_NE)
-  call postprocess(IST, G, IG)
 
+  !weighted sum of inputs over nsteps, to produce an n-day mean
   cvr = 0.0
   do j=js,je ; do i=is,ie
      sit = 0.0
@@ -627,15 +652,20 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
         IN_ANN(7,i,j) = G%mask2dT(i,j)
      enddo; enddo
 
-     dCN = 0.0
+     !dCN = 0.0
      call ANN_forward(IN_ANN, dCN, ML%ANN_weight_vec1, ML%ANN_weight_vec2, ML%ANN_weight_vec3, ML%ANN_weight_vec4, G)
 
+     !ML%dCN_restart(:,:,:) = 0.0
      do j=js,je ; do i=is,ie
         do k=1,ncat
-           IST%dCN(i,j,k) = G%mask2dT(i,j) * (dCN(k,i,j)*scale)
+           dCN(i,j,k) = G%mask2dT(i,j) * (dCN(i,j,k)*scale) 
+           !ML%dCN_restart(i,j,k) = G%mask2dT(i,j) * (dCN(i,j,k)*scale) 
         enddo
      enddo; enddo
 
+     !call postprocess(IST, ML%dCN_restart, G, IG)
+     call postprocess(IST, dCN, G, IG)
+     
      ML%SIC_filtered(:,:) = 0.0
      ML%SST_filtered(:,:) = 0.0
      ML%UI_filtered(:,:) = 0.0
@@ -648,24 +678,12 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
      ML%count = 0.
   endif
 
+  !if (ML%id_dcn>0) call post_data(ML%id_dcn, ML%dCN_restart, ML%diag)
+  if (ML%id_dcn>0) call post_data(ML%id_dcn, dCN, ML%diag)
+  
   ML%count = ML%count + 1.
 
 end subroutine ML_inference
-
-subroutine ML_end(CS)
-  type(ML_CS),                   intent(inout) :: CS         !< Control structure for the ML model(s)
-  deallocate(CS%SIC_filtered)
-  deallocate(CS%SST_filtered)
-  deallocate(CS%UI_filtered)
-  deallocate(CS%VI_filtered)
-  deallocate(CS%HI_filtered)
-  deallocate(CS%SW_filtered)
-  deallocate(CS%TS_filtered)
-  deallocate(CS%SSS_filtered)
-  deallocate(CS%land_mask)
-  deallocate(CS%CN_filtered)
-  deallocate(CS%count)
-end subroutine ML_end
 
 ! the functions below are taken from https://github.com/CICE-Consortium/Icepack/blob/main/columnphysics/icepack_mushy_physics.F90
 ! see also pages 57--62 of the CICE manual (https://citeseerx.ist.psu.edu/document?repid=rep1&type=pdf&doi=5eca93a8fbc716474f8fd80c804319b630f90316)
