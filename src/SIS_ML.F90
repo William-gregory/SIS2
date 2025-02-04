@@ -107,9 +107,9 @@ type, public :: ML_CS
        land_mask => NULL()        !< Land-sea mask [land cells = 0, ocean cells = 1]
 
   type(SIS_diag_ctrl), pointer :: diag => NULL() !< A type that regulates diagnostics output
-  >@{ Diagnostic handles
-  integer :: id_dcn = -1, id_swnet = -1
-  >@}
+  !>@{ Diagnostic handles
+  integer :: id_dcn = -1
+  !>@}
     
 end type ML_CS
 
@@ -130,9 +130,7 @@ subroutine ML_init(Time, G, param_file, diag, CS)
 
   CS%diag => diag
   CS%id_dcn    = register_diag_field('ice_model', 'dCN', diag%axesTc, Time, &
-               'ML-based correction to ice concentration', 'area fraction', missing_value=missing) !WG
-  CS%id_swnet  = register_diag_field('ice_model', 'SWnet', diag%axesT1, Time, &
-              'time-average shortwave for ML', 'Wm-2', missing_value=missing) !WG
+               'ML-based correction to ice concentration', 'area fraction', missing_value=missing)
   
   call get_param(param_file, mdl, "CNN_HALO_SIZE", CS%CNN_halo_size, &
       "Halo size at each side of subdomains, depends on CNN architecture.", & 
@@ -535,6 +533,7 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; ncat = IG%CatIce ; nlay = IG%NkIce
   isdw = ML%isdw; iedw = ML%iedw; jsdw = ML%jsdw; jedw = ML%jedw
   nb = size(FIA%flux_sw_top,4)
+  dCN = 0.0
 
   !if ( (.not. all( IST%dCN==0. )) .and. (ML%count /= nsteps) ) then
   !   call postprocess(IST, dCN, G, IG) !this is wrong!!! dCN will alway be zero!!
@@ -576,8 +575,6 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
         ML%HI_filtered(i,j) = ML%HI_filtered(i,j) + 0.0
      endif
   enddo; enddo
-
-  if (ML%id_swnet>0) call post_data(ML%id_swnet, ML%SW_filtered, ML%diag)
   
   if ( ML%count == nsteps ) then !nsteps have passed, do inference
 
@@ -619,7 +616,6 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
         IN_ANN(7,i,j) = G%mask2dT(i,j)
      enddo; enddo
 
-     !dCN = 0.0
      call ANN_forward(IN_ANN, dCN, ML%ANN_weight_vec1, ML%ANN_weight_vec2, ML%ANN_weight_vec3, ML%ANN_weight_vec4, G)
 
      do j=js,je ; do i=is,ie
@@ -627,8 +623,6 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
            dCN(i,j,k) = G%mask2dT(i,j) * (dCN(i,j,k)*scale)
         enddo
      enddo; enddo
-
-     if (ML%id_dcn>0) call post_data(ML%id_dcn, dCN, ML%diag)
 
      call postprocess(IST, dCN, G, IG)
      
@@ -644,6 +638,8 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
      ML%count = 0.
   endif
 
+  if (ML%id_dcn>0) call post_data(ML%id_dcn, dCN, ML%diag)
+  
   ML%count = ML%count + 1.
 
 end subroutine ML_inference

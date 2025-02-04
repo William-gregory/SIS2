@@ -450,8 +450,11 @@ subroutine slow_thermodynamics(IST, dt_slow, CS, OSS, FIA, XSF, IOF, G, US, IG)
 
   !  Other routines that do thermodynamic vertical processes should be added here
   !!! WG !!!
-  if (CS%do_ML) &
+  if (CS%do_ML) then
+       call enable_SIS_averaging(US%T_to_s*dt_slow, CS%Time, CS%ML%diag)
        call ML_inference(IST, OSS, FIA, IOF, G, IG, CS%ML, dt_slow)
+       call disable_SIS_averaging(CS%ML%diag)
+  endif
   !!! WG end !!!
 
   ! Do tracer column physics
