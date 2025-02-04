@@ -177,7 +177,7 @@ subroutine ML_init(Time, G, param_file, diag, CS)
   allocate(CS%SSS_filtered(CS%isdw:CS%iedw,CS%jsdw:CS%jedw), source=0.)
   allocate(CS%land_mask(CS%isdw:CS%iedw,CS%jsdw:CS%jedw), source=0.)
   allocate(CS%CN_filtered(G%isc:G%iec,G%jsc:G%jec,5), source=0.)
-  !allocate(CS%dCN_restart(G%isc:G%iec,G%jsc:G%jec,5), source=0.)
+  allocate(CS%dCN_restart(G%isc:G%iec,G%jsc:G%jec,5), source=0.)
   allocate(CS%count, source=1.)
 
 end subroutine ML_init
@@ -187,7 +187,7 @@ subroutine register_ML_restarts(CS, Ice_restart)
   type(SIS_restart_CS),    pointer       :: Ice_restart !< A pointer to the restart type for the ice
 
   call register_restart_field(Ice_restart, 'running_mean_cn',  CS%CN_filtered, units='none', mandatory=.false.)
-  !call register_restart_field(Ice_restart, 'part_size_increments', CS%dCN_restart, units='none', mandatory=.false.)
+  call register_restart_field(Ice_restart, 'part_size_increments', CS%dCN_restart, units='none', mandatory=.false.)
   call register_restart_field(Ice_restart, 'running_mean_sic', CS%SIC_filtered, units='none', mandatory=.false.)
   call register_restart_field(Ice_restart, 'running_mean_sst', CS%SST_filtered, units='deg C', mandatory=.false.)
   call register_restart_field(Ice_restart, 'running_mean_ui',  CS%UI_filtered, units='m s-1', mandatory=.false.)
@@ -527,7 +527,7 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
   call get_SIS2_thermo_coefs(IST%ITV, rho_ice=rho_ice)
 
   irho_ice = 1/rho_ice
-  scale = ML%ML_freq/432000.0 !dt_slow/432000.0 !Network was trained on 5-day (432000-second) increments
+  scale = dt_slow/432000.0 !Network was trained on 5-day (432000-second) increments
   nsteps = ML%ML_freq/dt_slow !number of timesteps in ML%ML_freq
   nsteps_i = dt_slow/ML%ML_freq
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; ncat = IG%CatIce ; nlay = IG%NkIce
@@ -535,9 +535,9 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
   nb = size(FIA%flux_sw_top,4)
   dCN = 0.0
 
-  !if ( (.not. all( IST%dCN==0. )) .and. (ML%count /= nsteps) ) then
-  !   call postprocess(IST, dCN, G, IG) !this is wrong!!! dCN will alway be zero!!
-  !endif
+  if ( (.not. all(ML%dCN_restart==0.)) .and. (ML%count /= nsteps) ) then
+     call postprocess(IST, ML%dCN_restart, G, IG)
+  endif
   
   net_sw = 0.0
   do j=js,je ; do i=is,ie !compute net shortwave
@@ -616,15 +616,16 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
         IN_ANN(7,i,j) = G%mask2dT(i,j)
      enddo; enddo
 
+     dCN = 0.0
      call ANN_forward(IN_ANN, dCN, ML%ANN_weight_vec1, ML%ANN_weight_vec2, ML%ANN_weight_vec3, ML%ANN_weight_vec4, G)
 
      do j=js,je ; do i=is,ie
         do k=1,ncat
-           dCN(i,j,k) = G%mask2dT(i,j) * (dCN(i,j,k)*scale)
+           ML%dCN_restart(i,j,k) = G%mask2dT(i,j) * (dCN(i,j,k)*scale)
         enddo
      enddo; enddo
 
-     call postprocess(IST, dCN, G, IG)
+     call postprocess(IST, ML%dCN_restart, G, IG)
      
      ML%SIC_filtered(:,:) = 0.0
      ML%SST_filtered(:,:) = 0.0
@@ -638,7 +639,7 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
      ML%count = 0.
   endif
 
-  if (ML%id_dcn>0) call post_data(ML%id_dcn, dCN, ML%diag)
+  if (ML%id_dcn>0) call post_data(ML%id_dcn, ML%dCN_restart, ML%diag)
   
   ML%count = ML%count + 1.
 
@@ -656,7 +657,7 @@ subroutine ML_end(CS)
   deallocate(CS%SSS_filtered)
   deallocate(CS%land_mask)
   deallocate(CS%CN_filtered)
-  !deallocate(CS%dCN_restart)
+  deallocate(CS%dCN_restart)
 end subroutine ML_end
 
 ! the functions below are taken from https://github.com/CICE-Consortium/Icepack/blob/main/columnphysics/icepack_mushy_physics.F90
