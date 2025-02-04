@@ -25,11 +25,14 @@ use SIS_hor_grid,              only : SIS_hor_grid_type
 use MOM_io,                    only : MOM_read_data
 use MOM_domains,               only : clone_MOM_domain,MOM_domain_type
 use MOM_domains,               only : pass_var, pass_vector, CGRID_NE
-use SIS_diag_mediator,         only : SIS_diag_ctrl
 use SIS2_ice_thm,              only : get_SIS2_thermo_coefs
 use SIS_restart,               only : register_restart_field, SIS_restart_CS
+use SIS_diag_mediator,         only : register_diag_field=>register_SIS_diag_field
+use SIS_diag_mediator,         only : post_SIS_data, post_data=>post_SIS_data
 use SIS_types,                 only : ice_state_type, ocean_sfc_state_type, fast_ice_avg_type, ice_ocean_flux_type
 use MOM_file_parser,           only : get_param, param_file_type
+use SIS_diag_mediator,         only : SIS_diag_ctrl
+use MOM_time_manager,          only : time_type
 
 implicit none; private
 
@@ -87,7 +90,7 @@ type, public :: ML_CS
   character(len=300)  :: CNN_weights !< filename of CNN weights netcdf file
   character(len=300)  :: ANN_weights !< filename of ANN weights netcdf file
 
-  real, public, pointer :: &
+  real, pointer :: &
        count => NULL() !< keeps track of 5-day time window for averaging
   real, dimension(:,:,:), pointer :: &
        CN_filtered => NULL(), &      !< Time-filtered category sea ice concentration [nondim]
@@ -101,32 +104,36 @@ type, public :: ML_CS
        SW_filtered => NULL(), &   !< Time-filtered net shortwave radiation [Wm-2]
        TS_filtered => NULL(), &   !< Time-filtered ice-surface skin temperature [degC]
        SSS_filtered => NULL(), &  !< Time-filtered sea-surface salinity [psu]
-       land_mask => NULL()        !< Land-sea mask [land cells = 0, ocean cells = 1] 
-  
+       land_mask => NULL()        !< Land-sea mask [land cells = 0, ocean cells = 1]
+
   type(SIS_diag_ctrl), pointer :: diag => NULL() !< A type that regulates diagnostics output
-  !>@{ Diagnostic handles
-  integer :: id_dCN = -1
-  !>@}
-  
+  >@{ Diagnostic handles
+  integer :: id_dcn = -1, id_swnet = -1
+  >@}
+    
 end type ML_CS
 
 contains
 
 !> Initialize ML routine and load CNN+ANN weights
-subroutine ML_init(G,param_file,diag,CS)
+subroutine ML_init(Time, G, param_file, diag, CS)
+  type(time_type),               intent(in)    :: Time       !< Current model time  
   type(SIS_hor_grid_type),       intent(in)    :: G          !< The horizontal grid structure.
   type(param_file_type),         intent(in)    :: param_file !< Parameter file parser structure.
   type(SIS_diag_ctrl), target,   intent(inout) :: diag       !< Diagnostics structure.
   type(ML_CS),                   intent(inout) :: CS         !< Control structure for the ML model(s)
-
+  
   ! Local Variables
   integer :: wd_halos(2) ! Varies with CNN
   real, parameter :: missing = -1e34
   character(len=40)  :: mdl = "SIS_ML"  ! module name
 
-  ! Register fields for output from this module.
   CS%diag => diag
-
+  CS%id_dcn    = register_diag_field('ice_model', 'dCN', diag%axesTc, Time, &
+               'ML-based correction to ice concentration', 'area fraction', missing_value=missing) !WG
+  CS%id_swnet  = register_diag_field('ice_model', 'SWnet', diag%axesT1, Time, &
+              'time-average shortwave for ML', 'Wm-2', missing_value=missing) !WG
+  
   call get_param(param_file, mdl, "CNN_HALO_SIZE", CS%CNN_halo_size, &
       "Halo size at each side of subdomains, depends on CNN architecture.", & 
       units="nondim", default=4)
@@ -172,7 +179,7 @@ subroutine ML_init(G,param_file,diag,CS)
   allocate(CS%SSS_filtered(CS%isdw:CS%iedw,CS%jsdw:CS%jedw), source=0.)
   allocate(CS%land_mask(CS%isdw:CS%iedw,CS%jsdw:CS%jedw), source=0.)
   allocate(CS%CN_filtered(G%isc:G%iec,G%jsc:G%jec,5), source=0.)
-  allocate(CS%dCN_restart(G%isc:G%iec,G%jsc:G%jec,5), source=0.)
+  !allocate(CS%dCN_restart(G%isc:G%iec,G%jsc:G%jec,5), source=0.)
   allocate(CS%count, source=1.)
 
 end subroutine ML_init
@@ -182,7 +189,7 @@ subroutine register_ML_restarts(CS, Ice_restart)
   type(SIS_restart_CS),    pointer       :: Ice_restart !< A pointer to the restart type for the ice
 
   call register_restart_field(Ice_restart, 'running_mean_cn',  CS%CN_filtered, units='none', mandatory=.false.)
-  call register_restart_field(Ice_restart, 'part_size_increments', CS%dCN_restart, units='none', mandatory=.false.)
+  !call register_restart_field(Ice_restart, 'part_size_increments', CS%dCN_restart, units='none', mandatory=.false.)
   call register_restart_field(Ice_restart, 'running_mean_sic', CS%SIC_filtered, units='none', mandatory=.false.)
   call register_restart_field(Ice_restart, 'running_mean_sst', CS%SST_filtered, units='deg C', mandatory=.false.)
   call register_restart_field(Ice_restart, 'running_mean_ui',  CS%UI_filtered, units='m s-1', mandatory=.false.)
@@ -369,7 +376,6 @@ subroutine postprocess(IST, increments, G, IG)
   posterior = 0.0
   do j=js,je ; do i=is,ie
      do k=1,ncat
-        IST%dCN(i,j,k) = increments(i,j,k) !save for diag
         posterior(i,j,k) = IST%part_size(i,j,k) + increments(i,j,k)
      enddo
      
@@ -462,7 +468,7 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
                                                         !  the ocean that are calculated by the ice model.
   type(SIS_hor_grid_type),    intent(in)     :: G       !< The horizontal grid structure
   type(ice_grid_type),        intent(in)     :: IG      !< Sea ice specific grid
-  type(ML_CS) ,               intent(inout)  :: ML      !< Control structure for the ML model
+  type(ML_CS),                intent(inout)  :: ML      !< Control structure for the ML model
   real,                       intent(in)     :: dt_slow !< The thermodynamic time step [T ~> s]
 
   real, dimension(9,SZIW_(ML),SZJW_(ML)) &
@@ -523,17 +529,16 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
   call get_SIS2_thermo_coefs(IST%ITV, rho_ice=rho_ice)
 
   irho_ice = 1/rho_ice
-  scale = dt_slow/432000.0 !Network was trained on 5-day (432000-second) increments
+  scale = ML%ML_freq/432000.0 !dt_slow/432000.0 !Network was trained on 5-day (432000-second) increments
   nsteps = ML%ML_freq/dt_slow !number of timesteps in ML%ML_freq
   nsteps_i = dt_slow/ML%ML_freq
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; ncat = IG%CatIce ; nlay = IG%NkIce
   isdw = ML%isdw; iedw = ML%iedw; jsdw = ML%jsdw; jedw = ML%jedw
   nb = size(FIA%flux_sw_top,4)
 
-  !in the first nsteps, ML%dCN_restart is zero, so this does nothing
-  if ( ML%count /= nsteps ) then
-     call postprocess(IST, ML%dCN_restart, G, IG)
-  endif
+  !if ( (.not. all( IST%dCN==0. )) .and. (ML%count /= nsteps) ) then
+  !   call postprocess(IST, dCN, G, IG) !this is wrong!!! dCN will alway be zero!!
+  !endif
   
   net_sw = 0.0
   do j=js,je ; do i=is,ie !compute net shortwave
@@ -572,6 +577,8 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
      endif
   enddo; enddo
 
+  if (ML%id_swnet>0) call post_data(ML%id_swnet, ML%SW_filtered, ML%diag)
+  
   if ( ML%count == nsteps ) then !nsteps have passed, do inference
 
      ! Update the wide halos
@@ -612,16 +619,18 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
         IN_ANN(7,i,j) = G%mask2dT(i,j)
      enddo; enddo
 
-     dCN = 0.0
+     !dCN = 0.0
      call ANN_forward(IN_ANN, dCN, ML%ANN_weight_vec1, ML%ANN_weight_vec2, ML%ANN_weight_vec3, ML%ANN_weight_vec4, G)
 
      do j=js,je ; do i=is,ie
         do k=1,ncat
-           ML%dCN_restart(i,j,k) = G%mask2dT(i,j) * (2*dCN(i,j,k)*scale) !why do we need this 2x scaling??
+           dCN(i,j,k) = G%mask2dT(i,j) * (dCN(i,j,k)*scale)
         enddo
      enddo; enddo
 
-     call postprocess(IST, ML%dCN_restart, G, IG)
+     if (ML%id_dcn>0) call post_data(ML%id_dcn, dCN, ML%diag)
+
+     call postprocess(IST, dCN, G, IG)
      
      ML%SIC_filtered(:,:) = 0.0
      ML%SST_filtered(:,:) = 0.0
@@ -651,8 +660,7 @@ subroutine ML_end(CS)
   deallocate(CS%SSS_filtered)
   deallocate(CS%land_mask)
   deallocate(CS%CN_filtered)
-  deallocate(CS%dCN_restart)
-  deallocate(CS%count)
+  !deallocate(CS%dCN_restart)
 end subroutine ML_end
 
 ! the functions below are taken from https://github.com/CICE-Consortium/Icepack/blob/main/columnphysics/icepack_mushy_physics.F90
