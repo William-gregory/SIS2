@@ -182,8 +182,8 @@ subroutine ML_init(Time, G, param_file, diag, CS)
        allocate(CS%land_mask(CS%isdw:CS%iedw,CS%jsdw:CS%jedw), source=0.)
   if (.not. allocated(CS%CN_filtered))	&
        allocate(CS%CN_filtered(G%isc:G%iec,G%jsc:G%jec,5), source=0.)
-  !if (.not. allocated(CS%dCN_restart))	&
-  !     allocate(CS%dCN_restart(G%isc:G%iec,G%jsc:G%jec,5), source=0.)
+  if (.not. allocated(CS%dCN_restart))	&
+       allocate(CS%dCN_restart(G%isc:G%iec,G%jsc:G%jec,5), source=0.)
   CS%count = 1.
 
 end subroutine ML_init
@@ -193,7 +193,7 @@ subroutine register_ML_restarts(CS, Ice_restart)
   type(SIS_restart_CS),    pointer       :: Ice_restart !< A pointer to the restart type for the ice
 
   call register_restart_field(Ice_restart, 'running_mean_cn',  CS%CN_filtered, units='none', mandatory=.false.)
-  !call register_restart_field(Ice_restart, 'part_size_increments', CS%dCN_restart, units='none', mandatory=.false.)
+  call register_restart_field(Ice_restart, 'part_size_increments', CS%dCN_restart, units='none', mandatory=.false.)
   call register_restart_field(Ice_restart, 'running_mean_sic', CS%SIC_filtered, units='none', mandatory=.false.)
   call register_restart_field(Ice_restart, 'running_mean_sst', CS%SST_filtered, units='deg C', mandatory=.false.)
   call register_restart_field(Ice_restart, 'running_mean_ui',  CS%UI_filtered, units='m s-1', mandatory=.false.)
@@ -370,7 +370,7 @@ subroutine postprocess(IST, increments, G, IG)
   call get_SIS2_thermo_coefs(IST%ITV, rho_ice=rho_ice)
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; ncat = IG%CatIce ; nlay = IG%NkIce
   irho_ice = 1/rho_ice
-  
+
   !Update category concentrations & bound between 0 and 1
   !This part checks if the updated SIC in any category is below zero.
   !If it is, spread the equivalent negative value across the other positive categories
@@ -531,7 +531,7 @@ subroutine ML_inference(IST, FIA, OSS, G, IG, ML, dt_slow)
   call get_SIS2_thermo_coefs(IST%ITV, rho_ice=rho_ice)
 
   irho_ice = 1/rho_ice
-  scale = ML%ML_freq/432000.0 !Network was trained on 5-day (432000-second) increments
+  scale = ML%ML_freq/432000.0 !dt_slow/432000.0 !Network was trained on 5-day (432000-second) increments
   nsteps = ML%ML_freq/dt_slow !number of timesteps in ML%ML_freq
   nsteps_i = dt_slow/ML%ML_freq
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; ncat = IG%CatIce ; nlay = IG%NkIce
@@ -539,7 +539,7 @@ subroutine ML_inference(IST, FIA, OSS, G, IG, ML, dt_slow)
   nb = size(FIA%flux_sw_top,4)
   dCN = 0.0
   
-  !if ( (.not. all(ML%dCN_restart==0.)) .and. (ML%count /= nsteps) ) then
+  !if ( ML%count /= nsteps ) then
   !   call postprocess(IST, ML%dCN_restart, G, IG)
   !endif
 
@@ -557,7 +557,7 @@ subroutine ML_inference(IST, FIA, OSS, G, IG, ML, dt_slow)
   if ( G%symmetric ) &
        call pass_vector(IST%u_ice_C, IST%v_ice_C, G%Domain, stagger=CGRID_NE)
 
-  !weighted sum of inputs over nsteps, to produce an n-day mean
+  !Produce mean input variables over nsteps
   cvr = 0.0
   do j=js,je ; do i=is,ie
      sit = 0.0
@@ -632,7 +632,7 @@ subroutine ML_inference(IST, FIA, OSS, G, IG, ML, dt_slow)
      !ML%dCN_restart(:,:,:) = 0.0
      do j=js,je ; do i=is,ie
         do k=1,ncat
-           dCN(i,j,k) = G%mask2dT(i,j) * (dCN(i,j,k)*scale)   
+           dCN(i,j,k) = G%mask2dT(i,j) * (dCN(i,j,k)*scale)
            !ML%dCN_restart(i,j,k) = G%mask2dT(i,j) * (dCN(i,j,k)*scale)
         enddo
      enddo; enddo
@@ -652,7 +652,6 @@ subroutine ML_inference(IST, FIA, OSS, G, IG, ML, dt_slow)
      ML%count = 0.
   endif
 
-  !if (ML%id_dcn>0) call post_data(ML%id_dcn, ML%dCN_restart, ML%diag)
   if (ML%id_dcn>0) call post_data(ML%id_dcn, dCN, ML%diag)
   
   ML%count = ML%count + 1.

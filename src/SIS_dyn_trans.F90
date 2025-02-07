@@ -659,7 +659,7 @@ subroutine SIS_dynamics_trans(IST, OSS, FIA, IOF, dt_slow, CS, icebergs_CS, G, U
        call disable_SIS_averaging(CS%ML%diag)
   endif
   !!! WG end !!!
-
+  
 end subroutine SIS_dynamics_trans
 
 
