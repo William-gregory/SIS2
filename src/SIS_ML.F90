@@ -98,7 +98,7 @@ type, public :: ML_CS
        SIC_filtered, &  !< Time-filtered aggregate sea ice concentration [nondim]
        SST_filtered, &  !< Time-filtered sea-surface temperature [degC]
        UI_filtered, &   !< Time-filtered zonal ice velocities [ms-1]
-       VI_filtered, &   !< Time-filtered meridional ice velocities [degC]
+       VI_filtered, &   !< Time-filtered meridional ice velocities [ms-1]
        HI_filtered, &   !< Time-filtered ice thickness [m]
        SW_filtered, &   !< Time-filtered net shortwave radiation [Wm-2]
        TS_filtered, &   !< Time-filtered ice-surface skin temperature [degC]
