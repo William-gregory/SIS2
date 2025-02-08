@@ -2336,7 +2336,7 @@ end subroutine SIS_dyn_trans_read_alt_restarts
 !> SIS_dyn_trans_init initializes ice model data, parameters and diagnostics
 !!   associated with the SIS2 dynamics and transport modules.
 subroutine SIS_dyn_trans_init(Time, G, US, IG, param_file, diag, CS, output_dir, Time_init, &
-                              slab_ice, Ice_restart) !WG
+                              slab_ice, Ice_restart, restart_dir) !WG
   type(time_type),     target, intent(in)    :: Time !< The sea-ice model's clock,
                                                      !! set with the current model time.
   type(SIS_hor_grid_type),     intent(in)    :: G    !< The horizontal grid structure
@@ -2350,6 +2350,7 @@ subroutine SIS_dyn_trans_init(Time, G, US, IG, param_file, diag, CS, output_dir,
   logical,           optional, intent(in)    :: slab_ice  !< If true, use the archaic GFDL slab ice dynamics
                                                           !!  and transport.
   type(SIS_restart_CS),        pointer       :: Ice_restart !< A pointer to the restart type for the ice !WG
+  character(len=*),            intent(in)    :: restart_dir !< A directory in which to find the restart file !WG
 
   ! This include declares and sets the variable "version".
 #  include "version_variable.h"
@@ -2468,7 +2469,7 @@ subroutine SIS_dyn_trans_init(Time, G, US, IG, param_file, diag, CS, output_dir,
   "Perform machine learning based bias correction.", default=.false.)
   if ( CS%do_ML ) then
      call ML_init(CS%Time, G, param_file, CS%diag, CS%ML)
-     call register_ML_restarts(CS%ML, Ice_restart)
+     call register_ML_restarts(CS%ML, G, Ice_restart, restart_dir)
   endif
   !!! WG END !!!
 

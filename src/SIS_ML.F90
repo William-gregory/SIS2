@@ -26,7 +26,7 @@ use MOM_io,                    only : MOM_read_data
 use MOM_domains,               only : clone_MOM_domain,MOM_domain_type
 use MOM_domains,               only : pass_var, pass_vector, CGRID_NE
 use SIS2_ice_thm,              only : get_SIS2_thermo_coefs
-use SIS_restart,               only : register_restart_field, SIS_restart_CS
+use SIS_restart,               only : register_restart_field, SIS_restart_CS, restore_SIS_state
 use SIS_diag_mediator,         only : register_diag_field=>register_SIS_diag_field
 use SIS_diag_mediator,         only : post_SIS_data, post_data=>post_SIS_data
 use SIS_types,                 only : ice_state_type, ocean_sfc_state_type, fast_ice_avg_type, ice_ocean_flux_type
@@ -188,9 +188,11 @@ subroutine ML_init(Time, G, param_file, diag, CS)
 
 end subroutine ML_init
 
-subroutine register_ML_restarts(CS, Ice_restart)
+subroutine register_ML_restarts(CS, G, Ice_restart, restart_dir)
   type(ML_CS),             intent(in)    :: CS      !< Control structure for the ML model
+  type(SIS_hor_grid_type), intent(in)    :: G       !< The horizontal grid type
   type(SIS_restart_CS),    pointer       :: Ice_restart !< A pointer to the restart type for the ice
+  character(len=*),        intent(in)    :: restart_dir !< A directory in which to find the restart file
 
   call register_restart_field(Ice_restart, 'running_mean_cn',  CS%CN_filtered, units='none', mandatory=.false.)
   call register_restart_field(Ice_restart, 'part_size_increments', CS%dCN_restart, units='none', mandatory=.false.)
@@ -203,6 +205,8 @@ subroutine register_ML_restarts(CS, Ice_restart)
   call register_restart_field(Ice_restart, 'running_mean_ts',  CS%TS_filtered, units='deg C', mandatory=.false.)
   call register_restart_field(Ice_restart, 'running_mean_sss', CS%SSS_filtered, units='g/kg', mandatory=.false.)
   call register_restart_field(Ice_restart, 'day_counter',  CS%count, units='none', mandatory=.false.)
+
+  call restore_SIS_state(Ice_restart, restart_dir, 'r', G)
   
 end subroutine register_ML_restarts
 
