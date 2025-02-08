@@ -164,11 +164,7 @@ subroutine ML_init(Time, G, param_file, diag, CS)
   
   wd_halos(1) = CS%CNN_halo_size
   wd_halos(2) = CS%CNN_halo_size
-  if (G%symmetric) then
-     call clone_MOM_domain(G%Domain, CS%CNN_Domain, min_halo=wd_halos, symmetric=.true.)
-  else
-     call clone_MOM_domain(G%Domain, CS%CNN_Domain, min_halo=wd_halos, symmetric=.false.)
-  endif
+  call clone_MOM_domain(G%Domain, CS%CNN_Domain, min_halo=wd_halos, symmetric=G%symmetric)
   CS%isdw = G%isc-wd_halos(1) ; CS%iedw = G%iec+wd_halos(1)
   CS%jsdw = G%jsc-wd_halos(2) ; CS%jedw = G%jec+wd_halos(2)
 
@@ -192,8 +188,8 @@ subroutine ML_init(Time, G, param_file, diag, CS)
        allocate(CS%land_mask(CS%isdw:CS%iedw,CS%jsdw:CS%jedw), source=0.)
   if (.not. allocated(CS%CN_filtered))	&
        allocate(CS%CN_filtered(G%isc:G%iec,G%jsc:G%jec,5), source=0.)
-  !if (.not. allocated(CS%dCN_restart))	&
-  !     allocate(CS%dCN_restart(G%isc:G%iec,G%jsc:G%jec,5), source=0.)
+  if (.not. allocated(CS%dCN_restart))	&
+       allocate(CS%dCN_restart(G%isc:G%iec,G%jsc:G%jec,5), source=0.)
   CS%count = 1.
 
 end subroutine ML_init
@@ -211,7 +207,7 @@ subroutine register_ML_restarts(CS, G, Ice_restart, restart_dir)
   mpp_wh_domain => CS%CNN_Domain%mpp_domain
 
   id_cn = register_restart_field(Ice_restart, trim(CS%restart_file), 'running_mean_cn',  CS%CN_filtered, domain=mpp_domain, mandatory=.false.)
-  !id_dcn = register_restart_field(Ice_restart, trim(CS%restart_file), 'part_size_increments',  CS%dCN_restart, domain=mpp_domain, mandatory=.false.)
+  id_dcn = register_restart_field(Ice_restart, trim(CS%restart_file), 'part_size_increments',  CS%dCN_restart, domain=mpp_domain, mandatory=.false.)
   id_sic = register_restart_field(Ice_restart, trim(CS%restart_file), 'running_mean_sic', CS%SIC_filtered, domain=mpp_wh_domain, mandatory=.false.)
   id_sst = register_restart_field(Ice_restart, trim(CS%restart_file), 'running_mean_sst', CS%SST_filtered, domain=mpp_wh_domain, mandatory=.false.)
   id_ui = register_restart_field(Ice_restart, trim(CS%restart_file), 'running_mean_ui',  CS%UI_filtered, domain=mpp_wh_domain, mandatory=.false.)
@@ -223,7 +219,7 @@ subroutine register_ML_restarts(CS, G, Ice_restart, restart_dir)
   id_cnt = register_restart_field(Ice_restart, trim(CS%restart_file), 'day_counter', CS%count, mandatory=.false.)
 
   call restore_state(Ice_restart, id_cn, restart_dir, nonfatal_missing_files=.true.)
-  !call restore_state(Ice_restart, id_dcn, restart_dir, nonfatal_missing_files=.true.)
+  call restore_state(Ice_restart, id_dcn, restart_dir, nonfatal_missing_files=.true.)
   call restore_state(Ice_restart, id_sic, restart_dir, nonfatal_missing_files=.true.)
   call restore_state(Ice_restart, id_sst, restart_dir, nonfatal_missing_files=.true.)
   call restore_state(Ice_restart, id_ui, restart_dir, nonfatal_missing_files=.true.)
@@ -377,7 +373,7 @@ end subroutine ANN_forward
 
 subroutine postprocess(IST, increments, G, IG)
   type(ice_state_type),       intent(inout)  :: IST     !< A type describing the state of the sea ice
-  real, dimension(:,:,:), target,intent(in)  :: increments !< ML-predicted increments
+  real, dimension(:,:,:),     intent(in)     :: increments !< ML-predicted increments
   type(SIS_hor_grid_type),    intent(in)     :: G       !< The horizontal grid structure
   type(ice_grid_type),        intent(in)     :: IG      !< Sea ice specific grid
 
@@ -402,41 +398,14 @@ subroutine postprocess(IST, increments, G, IG)
   irho_ice = 1/rho_ice
   
   !Update category concentrations & bound between 0 and 1
-  !This part checks if the updated SIC in any category is below zero.
-  !If it is, spread the equivalent negative value across the other positive categories
-  !E.g if new SIC is [-0.2,0.1,0.2,0.3,0.4], then remove 0.2/4 from categories 2 through 5
-  !E.g if new SIC is [-0.2,-0.1,0.4,0.2,0.1], then remove 0.3/3 from categories 3 through 5
-  !This will continue in a 'while loop' until all categories are >= 0.
   posterior = 0.0
   do j=js,je ; do i=is,ie
-     do k=1,ncat
-        posterior(i,j,k) = IST%part_size(i,j,k) + increments(i,j,k)
-     enddo
-     
-     do
-        negatives = (posterior(i,j,1:) < 0.0)
-        if (.not. any(negatives)) exit
-
-        dists = 0.0
-        positives = 0.0
-        do k=1,ncat
-           if (negatives(k)) then
-              dists = dists + abs(posterior(i,j,k))
-           elseif (posterior(i,j,k) > 0.0) then
-              positives = positives + 1.0
-           endif
-        enddo
-
-        do k=1,ncat
-           if (posterior(i,j,k) > 0.0) then
-              posterior(i,j,k) = posterior(i,j,k) - (dists/positives)
-           elseif (posterior(i,j,k) < 0.0) then
-              posterior(i,j,k) = 0.0
-           endif
-        enddo
-     enddo
      cvr = 0.0
      do k=1,ncat
+        posterior(i,j,k) = IST%part_size(i,j,k) + increments(i,j,k) 
+        if (posterior(i,j,k)<0.0) then
+           posterior(i,j,k) = 0.0
+        endif
         cvr = cvr + posterior(i,j,k)
      enddo
      if (cvr>1) then
@@ -445,7 +414,7 @@ subroutine postprocess(IST, increments, G, IG)
         enddo
      endif
      cvr = 0.0
-     do k=1,ncat
+    do k=1,ncat
         cvr = cvr + posterior(i,j,k)
      enddo
      posterior(i,j,0) = 1 - cvr
@@ -492,14 +461,12 @@ end subroutine postprocess
 !> between 0 and 1, and then makes commensurate adjustments to the sea ice profiles in the case of
 !> adding/removing sea ice (i.e add thickness and salinity for new ice). The code is currently non-
 !> conservative in terms of heat, mass, salt.
-subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
+subroutine ML_inference(IST, FIA, OSS, G, IG, ML, dt_slow)
   type(ice_state_type),       intent(inout)  :: IST     !< A type describing the state of the sea ice
-  type(fast_ice_avg_type),    intent(inout)  :: FIA     !< A type containing averages of fields
+  type(fast_ice_avg_type),    intent(in)     :: FIA     !< A type containing averages of fields
                                                         ! (mostly fluxes) over the fast updates
-  type(ocean_sfc_state_type), intent(inout)  :: OSS     !< A structure containing the arrays that describe
+  type(ocean_sfc_state_type), intent(in)     :: OSS     !< A structure containing the arrays that describe
                                                         !  the ocean's surface state for the ice model.
-  type(ice_ocean_flux_type),  intent(inout)  :: IOF     !< A structure containing fluxes from the ice to
-                                                        !  the ocean that are calculated by the ice model.
   type(SIS_hor_grid_type),    intent(in)     :: G       !< The horizontal grid structure
   type(ice_grid_type),        intent(in)     :: IG      !< Sea ice specific grid
   type(ML_CS) ,               intent(inout)  :: ML      !< Control structure for the ML model
@@ -563,17 +530,23 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
   call get_SIS2_thermo_coefs(IST%ITV, rho_ice=rho_ice)
 
   irho_ice = 1/rho_ice
-  scale = ML%ML_freq/432000.0 !Network was trained on 5-day (432000-second) increments
+  scale = dt_slow/432000.0 !Network was trained on 5-day (432000-second) increments
   nsteps = ML%ML_freq/dt_slow !number of timesteps in ML%ML_freq
   nsteps_i = dt_slow/ML%ML_freq
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; ncat = IG%CatIce ; nlay = IG%NkIce
   isdw = ML%isdw; iedw = ML%iedw; jsdw = ML%jsdw; jedw = ML%jedw
   nb = size(FIA%flux_sw_top,4)
-  dCN = 0.0
 
-  !if ( (.not. all(ML%dCN_restart==0.)) .and. (ML%count /= nsteps) ) then
-  !   call postprocess(IST, ML%dCN_restart, G, IG)
-  !endif
+  dCN = 0.0
+  do j=js,je ; do i=is,ie
+     do k=1,ncat
+        dCN(i,j,k) = ML%dCN_restart(i,j,k)
+     enddo
+  enddo; enddo
+
+  if ( (.not. all(dCN==0.0)) .and. (ML%count /= nsteps) ) then
+     call postprocess(IST, dCN, G, IG)
+  endif
 
   net_sw = 0.0
   do j=js,je ; do i=is,ie !compute net shortwave
@@ -586,8 +559,6 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
      enddo
   enddo; enddo
 
-  call pass_vector(IST%u_ice_C, IST%v_ice_C, G%Domain, stagger=CGRID_NE)
-
   !weighted sum of inputs over nsteps, to produce an n-day mean
   cvr = 0.0
   do j=js,je ; do i=is,ie
@@ -595,8 +566,8 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
      cvr = 1 - IST%part_size(i,j,0)
      ML%SIC_filtered(i,j) = ML%SIC_filtered(i,j) + (cvr*nsteps_i)
      ML%SST_filtered(i,j) = ML%SST_filtered(i,j) + (OSS%SST_C(i,j)*nsteps_i)
-     ML%UI_filtered(i,j) =  ML%UI_filtered(i,j) + (((IST%u_ice_C(I-1,j) + IST%u_ice_C(I,j))/2)*nsteps_i)
-     ML%VI_filtered(i,j) =  ML%VI_filtered(i,j) + (((IST%v_ice_C(i,J-1) + IST%v_ice_C(i,J))/2)*nsteps_i)
+     ML%UI_filtered(i,j) = ML%UI_filtered(i,j) + (IST%u_ice_C(i,j)*nsteps_i)
+     ML%VI_filtered(i,j) = ML%VI_filtered(i,j) + (IST%v_ice_C(i,j)*nsteps_i)
      ML%SW_filtered(i,j) =  ML%SW_filtered(i,j) + (net_sw(i,j)*nsteps_i) 
      ML%TS_filtered(i,j) =  ML%TS_filtered(i,j) + (FIA%Tskin_avg(i,j)*nsteps_i)
      ML%SSS_filtered(i,j) = ML%SSS_filtered(i,j) + (OSS%s_surf(i,j)*nsteps_i)
@@ -611,7 +582,7 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
         ML%HI_filtered(i,j) = ML%HI_filtered(i,j) + 0.0
      endif
   enddo; enddo
-
+  
   if ( ML%count == nsteps ) then !nsteps have passed, do inference
 
      ! Update the wide halos
@@ -652,18 +623,17 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
         IN_ANN(7,i,j) = G%mask2dT(i,j)
      enddo; enddo
 
-     !dCN = 0.0
+     dCN = 0.0
      call ANN_forward(IN_ANN, dCN, ML%ANN_weight_vec1, ML%ANN_weight_vec2, ML%ANN_weight_vec3, ML%ANN_weight_vec4, G)
 
-     !ML%dCN_restart(:,:,:) = 0.0
+     ML%dCN_restart(:,:,:) = 0.0
      do j=js,je ; do i=is,ie
         do k=1,ncat
-           dCN(i,j,k) = G%mask2dT(i,j) * (dCN(i,j,k)*scale) 
-           !ML%dCN_restart(i,j,k) = G%mask2dT(i,j) * (dCN(i,j,k)*scale) 
+           dCN(i,j,k) = G%mask2dT(i,j) * (dCN(i,j,k)*scale)
+           ML%dCN_restart(i,j,k) = dCN(i,j,k)
         enddo
      enddo; enddo
 
-     !call postprocess(IST, ML%dCN_restart, G, IG)
      call postprocess(IST, dCN, G, IG)
      
      ML%SIC_filtered(:,:) = 0.0
@@ -678,7 +648,6 @@ subroutine ML_inference(IST, OSS, FIA, IOF, G, IG, ML, dt_slow)
      ML%count = 0.
   endif
 
-  !if (ML%id_dcn>0) call post_data(ML%id_dcn, ML%dCN_restart, ML%diag)
   if (ML%id_dcn>0) call post_data(ML%id_dcn, dCN, ML%diag)
   
   ML%count = ML%count + 1.

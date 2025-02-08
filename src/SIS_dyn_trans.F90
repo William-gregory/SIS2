@@ -63,6 +63,7 @@ use SIS2_ice_thm,  only : enth_from_TS, Temp_from_En_S
 use slab_ice,      only : slab_ice_advect, slab_ice_dynamics
 use ice_bergs,     only : icebergs, icebergs_run, icebergs_init, icebergs_end
 use ice_grid,      only : ice_grid_type
+use SIS_ML,        only : ML_CS,ML_init,ML_inference,register_ML_restarts !WG
 
 implicit none ; private
 
@@ -122,6 +123,11 @@ type dyn_trans_CS ; private
   type(time_type), pointer :: Time => NULL() !< A pointer to the ocean model's clock.
   type(SIS_diag_ctrl), pointer :: diag => NULL() !< A structure that is used to regulate the
                                    !! timing of diagnostic output.
+
+  !!! WG !!!
+  type(ML_CS) :: ML    !< Control structure for the ML model
+  logical     :: do_ML !< If true, perform ML-based bias correction
+  !!! WG end !!!
 
   !>@{ Diagnostic IDs
   integer :: id_fax=-1, id_fay=-1
@@ -600,6 +606,14 @@ subroutine SIS_dynamics_trans(IST, OSS, FIA, IOF, dt_slow, CS, icebergs_CS, G, I
 
   ! Do diagnostics and update some information for the atmosphere.
   call ice_state_cleanup(IST, OSS, IOF, dt_slow, G, IG, CS, tracer_CSp)
+
+  !!! WG !!!
+  if (CS%do_ML) then
+       call enable_SIS_averaging(dt_slow, CS%Time, CS%ML%diag)
+       call ML_inference(IST, FIA, OSS, G, IG, CS%ML, dt_slow)
+       call disable_SIS_averaging(CS%ML%diag)
+  endif
+  !!! WG end !!!
 
 end subroutine SIS_dynamics_trans
 
@@ -2079,7 +2093,7 @@ end subroutine SIS_dyn_trans_read_alt_restarts
 !> SIS_dyn_trans_init initializes ice model data, parameters and diagnostics
 !!   associated with the SIS2 dynamics and transport modules.
 subroutine SIS_dyn_trans_init(Time, G, IG, param_file, diag, CS, output_dir, Time_init, &
-                              slab_ice)
+                              slab_ice, Ice_restart, restart_dir) !WG
   type(time_type),     target, intent(in)    :: Time !< The sea-ice model's clock,
                                                      !! set with the current model time.
   type(SIS_hor_grid_type),     intent(in)    :: G    !< The horizontal grid structure
@@ -2090,7 +2104,9 @@ subroutine SIS_dyn_trans_init(Time, G, IG, param_file, diag, CS, output_dir, Tim
   character(len=*),            intent(in)    :: output_dir !< The directory to use for writing output
   type(time_type),             intent(in)    :: Time_Init !< Starting time of the model integration
   logical,           optional, intent(in)    :: slab_ice  !< If true, use the archaic GFDL slab ice dynamics
-                                                     !!  and transport.
+                                                          !!  and transport.
+  type(restart_file_type),     pointer       :: Ice_restart !< A pointer to the restart type for the ice !WG
+  character(len=*),            intent(in)    :: restart_dir !< A directory in which to find the restart file !WG
 
   ! This include declares and sets the variable "version".
 #  include "version_variable.h"
@@ -2195,6 +2211,15 @@ subroutine SIS_dyn_trans_init(Time, G, IG, param_file, diag, CS, output_dir, Tim
   call get_param(param_file, mdl, "VERBOSE", CS%verbose, &
                  "If true, write out verbose diagnostics.", default=.false., &
                  debuggingParam=.true.)
+
+  !!! WG !!!
+  call get_param(param_file, mdl, "DO_ML", CS%do_ML, &
+  "Perform machine learning based bias correction.", default=.false.)
+  if ( CS%do_ML ) then
+     call ML_init(CS%Time, G, param_file, CS%diag, CS%ML)
+     call register_ML_restarts(CS%ML, G, Ice_restart, restart_dir)
+  endif
+  !!! WG END !!!
 
   CS%complete_ice_cover = 1.0 - 2.0*epsilon(CS%complete_ice_cover)
 

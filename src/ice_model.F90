@@ -2590,7 +2590,7 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
     !call SIS_slow_thermo_init(Ice%sCS%Time, sG, sIG, param_file, Ice%sCS%diag, &
     !                          Ice%sCS%slow_thermo_CSp, Ice%sCS%SIS_tracer_flow_CSp)
     call SIS_slow_thermo_init(Ice%sCS%Time, sG, sIG, param_file, Ice%sCS%diag, &
-                              Ice%sCS%slow_thermo_CSp, Ice%sCS%SIS_tracer_flow_CSp, Ice%Ice_Restart, dirs%restart_input_dir) !WG
+                              Ice%sCS%slow_thermo_CSp, Ice%sCS%SIS_tracer_flow_CSp)
 
     if (specified_ice) then
       call specified_ice_init(Ice%sCS%Time, sG, sIG, param_file, Ice%sCS%diag, &
@@ -2600,7 +2600,7 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
     else
       call SIS_dyn_trans_init(Ice%sCS%Time, sG, sIG, param_file, Ice%sCS%diag, &
                               Ice%sCS%dyn_trans_CSp, dirs%output_directory, Time_Init, &
-                              slab_ice=slab_ice)
+                              slab_ice=slab_ice, Ice_restart=Ice%Ice_Restart, restart_dir=dirs%restart_input_dir) !WG
       call SIS_slow_thermo_set_ptrs(Ice%sCS%slow_thermo_CSp, &
                    transport_CSp=SIS_dyn_trans_transport_CS(Ice%sCS%dyn_trans_CSp), &
                    sum_out_CSp=SIS_dyn_trans_sum_output_CS(Ice%sCS%dyn_trans_CSp))

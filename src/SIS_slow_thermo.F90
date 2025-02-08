@@ -70,8 +70,6 @@ use SIS_transport, only : adjust_ice_categories, SIS_transport_CS
 use SIS_tracer_flow_control, only : SIS_tracer_flow_control_CS
 use SIS_tracer_registry, only : SIS_unpack_passive_ice_tr, SIS_repack_passive_ice_tr
 use SIS_tracer_registry, only : SIS_count_passive_tracers
-use SIS_ML,              only : ML_CS,ML_init,ML_inference,register_ML_restarts !WG
-use fms_io_mod,          only : restart_file_type !WG
 
 implicit none ; private
 
@@ -142,11 +140,6 @@ type slow_thermo_CS ; private
                             !< A pointers to the control structures for a subsidiary module
   type(SIS_tracer_flow_control_CS), pointer :: tracer_flow_CSp => NULL()
                             !< A pointers to the control structures for a subsidiary module
-
-  !!! WG !!!
-  type(ML_CS) :: ML    !< Control structure for the ML model
-  logical     :: do_ML !< If true, perform ML-based bias correction
-  !!! WG end !!!
   
   !>@{ Diagnostic IDs
   integer :: id_qflim=-1, id_qfres=-1, id_fwnudge=-1, id_net_melt=-1, id_CMOR_melt=-1
@@ -463,13 +456,6 @@ subroutine slow_thermodynamics(IST, dt_slow, CS, OSS, FIA, XSF, IOF, G, IG)
   endif
 
   !  Other routines that do thermodynamic vertical processes should be added here
-  !!! WG !!!
-  if (CS%do_ML) then
-       call enable_SIS_averaging(dt_slow, CS%Time, CS%ML%diag)
-       call ML_inference(IST, OSS, FIA, IOF, G, IG, CS%ML, dt_slow)
-       call disable_SIS_averaging(CS%ML%diag)
-  endif
-  !!! WG end !!!
 
   ! Do tracer column physics
   call enable_SIS_averaging(dt_slow, CS%Time, CS%diag)
@@ -1360,7 +1346,7 @@ end subroutine SIS2_thermodynamics
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
 !> SIS_slow_thermo_init - initializes the parameters and diagnostics associated
 !!    with the SIS_slow_thermo module.
-subroutine SIS_slow_thermo_init(Time, G, IG, param_file, diag, CS, tracer_flow_CSp, Ice_restart, restart_dir)
+subroutine SIS_slow_thermo_init(Time, G, IG, param_file, diag, CS, tracer_flow_CSp)
   type(time_type),     target, intent(in)    :: Time !< The sea-ice model's clock,
                                                      !! set with the current model.
   type(SIS_hor_grid_type),     intent(in)    :: G    !< The horizontal grid structure
@@ -1372,8 +1358,6 @@ subroutine SIS_slow_thermo_init(Time, G, IG, param_file, diag, CS, tracer_flow_C
   type(SIS_tracer_flow_control_CS), &
                                pointer       :: tracer_flow_CSp !< A structure that is used to
                                                                 !! orchestrate the calling ice tracer packages
-  type(restart_file_type),     pointer       :: Ice_restart !< A pointer to the restart type for the ice
-  character(len=*),            intent(in)    :: restart_dir !< A directory in which to find the restart file
   
 
 ! This include declares and sets the variable "version".
@@ -1511,15 +1495,6 @@ subroutine SIS_slow_thermo_init(Time, G, IG, param_file, diag, CS, tracer_flow_C
     CS%id_fwnudge  = register_diag_field('ice_model','FW_NUDGE' ,diag%axesT1, Time, &
                'nudging freshwater flux', 'kg/(m^2*s)', missing_value=missing)
   endif
-
-  !!! WG !!!
-  call get_param(param_file, mdl, "DO_ML", CS%do_ML, &
-  "Perform machine learning based bias correction.", default=.false.)
-  if ( CS%do_ML ) then
-     call ML_init(Time, G, param_file, diag, CS%ML)
-     call register_ML_restarts(CS%ML, G, Ice_restart, restart_dir)
-  endif
-  !!! WG END !!!
 
   call SIS2_ice_thm_init(param_file, CS%ice_thm_CSp)
 
