@@ -372,41 +372,14 @@ subroutine postprocess(IST, increments, G, IG)
   irho_ice = 1/rho_ice
 
   !Update category concentrations & bound between 0 and 1
-  !This part checks if the updated SIC in any category is below zero.
-  !If it is, spread the equivalent negative value across the other positive categories
-  !E.g if new SIC is [-0.2,0.1,0.2,0.3,0.4], then remove 0.2/4 from categories 2 through 5
-  !E.g if new SIC is [-0.2,-0.1,0.4,0.2,0.1], then remove 0.3/3 from categories 3 through 5
-  !This will continue in a 'while loop' until all categories are >= 0.
   posterior = 0.0
   do j=js,je ; do i=is,ie
-     do k=1,ncat
-        posterior(i,j,k) = IST%part_size(i,j,k) + increments(i,j,k)
-     enddo
-     
-     do
-        negatives = (posterior(i,j,1:) < 0.0)
-        if (.not. any(negatives)) exit
-
-        dists = 0.0
-        positives = 0.0
-        do k=1,ncat
-           if (negatives(k)) then
-              dists = dists + abs(posterior(i,j,k))
-           elseif (posterior(i,j,k) > 0.0) then
-              positives = positives + 1.0
-           endif
-        enddo
-
-        do k=1,ncat
-           if (posterior(i,j,k) > 0.0) then
-              posterior(i,j,k) = posterior(i,j,k) - (dists/positives)
-           elseif (posterior(i,j,k) < 0.0) then
-              posterior(i,j,k) = 0.0
-           endif
-        enddo
-     enddo
      cvr = 0.0
      do k=1,ncat
+        posterior(i,j,k) = IST%part_size(i,j,k) + increments(i,j,k) 
+        if (posterior(i,j,k)<0.0) then
+           posterior(i,j,k) = 0.0
+        endif
         cvr = cvr + posterior(i,j,k)
      enddo
      if (cvr>1) then
@@ -415,7 +388,7 @@ subroutine postprocess(IST, increments, G, IG)
         enddo
      endif
      cvr = 0.0
-     do k=1,ncat
+    do k=1,ncat
         cvr = cvr + posterior(i,j,k)
      enddo
      posterior(i,j,0) = 1 - cvr
