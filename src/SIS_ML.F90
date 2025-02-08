@@ -464,7 +464,7 @@ end subroutine postprocess
 !> conservative in terms of heat, mass, salt.
 subroutine ML_inference(IST, FIA, OSS, G, IG, ML, dt_slow)
   type(ice_state_type),       intent(inout)  :: IST     !< A type describing the state of the sea ice
-  type(fast_ice_avg_type),    intent(inout)  :: FIA     !< A type containing averages of fields
+  type(fast_ice_avg_type),    intent(in)     :: FIA     !< A type containing averages of fields
                                                         ! (mostly fluxes) over the fast updates
   type(ocean_sfc_state_type), intent(in)     :: OSS     !< A structure containing the arrays that describe
                                                         !  the ocean's surface state for the ice model.
@@ -531,17 +531,23 @@ subroutine ML_inference(IST, FIA, OSS, G, IG, ML, dt_slow)
   call get_SIS2_thermo_coefs(IST%ITV, rho_ice=rho_ice)
 
   irho_ice = 1/rho_ice
-  scale = ML%ML_freq/432000.0 !dt_slow/432000.0 !Network was trained on 5-day (432000-second) increments
+  scale = dt_slow/432000.0 !Network was trained on 5-day (432000-second) increments
   nsteps = ML%ML_freq/dt_slow !number of timesteps in ML%ML_freq
   nsteps_i = dt_slow/ML%ML_freq
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; ncat = IG%CatIce ; nlay = IG%NkIce
   isdw = ML%isdw; iedw = ML%iedw; jsdw = ML%jsdw; jedw = ML%jedw
   nb = size(FIA%flux_sw_top,4)
+
   dCN = 0.0
+  do j=js,je ; do i=is,ie
+     do k=1,ncat
+        dCN(i,j,k) = ML%dCN_restart(i,j,k)
+     enddo
+  enddo; enddo
   
-  !if ( ML%count /= nsteps ) then
-  !   call postprocess(IST, ML%dCN_restart, G, IG)
-  !endif
+  if ( (.not. all(dCN==0.0)) .and. (ML%count /= nsteps) ) then
+     call postprocess(IST, dCN, G, IG)
+  endif
 
   net_sw = 0.0
   do j=js,je ; do i=is,ie !compute net shortwave
@@ -554,9 +560,6 @@ subroutine ML_inference(IST, FIA, OSS, G, IG, ML, dt_slow)
      enddo
   enddo; enddo
 
-  if ( G%symmetric ) &
-       call pass_vector(IST%u_ice_C, IST%v_ice_C, G%Domain, stagger=CGRID_NE)
-
   !Produce mean input variables over nsteps
   cvr = 0.0
   do j=js,je ; do i=is,ie
@@ -564,13 +567,8 @@ subroutine ML_inference(IST, FIA, OSS, G, IG, ML, dt_slow)
      cvr = 1 - IST%part_size(i,j,0)
      ML%SIC_filtered(i,j) = ML%SIC_filtered(i,j) + (cvr*nsteps_i)
      ML%SST_filtered(i,j) = ML%SST_filtered(i,j) + (OSS%SST_C(i,j)*nsteps_i)
-     if ( G%symmetric ) then !do 2-pt average to move velocities to tracer location
-        ML%UI_filtered(i,j) =  ML%UI_filtered(i,j) + (((IST%u_ice_C(I-1,j) + IST%u_ice_C(I,j))/2)*nsteps_i)
-        ML%VI_filtered(i,j) =  ML%VI_filtered(i,j) + (((IST%v_ice_C(i,J-1) + IST%v_ice_C(i,J))/2)*nsteps_i)
-     else
-        ML%UI_filtered(i,j) = ML%UI_filtered(i,j) + (IST%u_ice_C(i,j)*nsteps_i)
-        ML%VI_filtered(i,j) = ML%VI_filtered(i,j) + (IST%v_ice_C(i,j)*nsteps_i)
-     endif
+     ML%UI_filtered(i,j) = ML%UI_filtered(i,j) + (IST%u_ice_C(i,j)*nsteps_i)
+     ML%VI_filtered(i,j) = ML%VI_filtered(i,j) + (IST%v_ice_C(i,j)*nsteps_i)
      ML%SW_filtered(i,j) =  ML%SW_filtered(i,j) + (net_sw(i,j)*nsteps_i) 
      ML%TS_filtered(i,j) =  ML%TS_filtered(i,j) + (FIA%Tskin_avg(i,j)*nsteps_i)
      ML%SSS_filtered(i,j) = ML%SSS_filtered(i,j) + (OSS%s_surf(i,j)*nsteps_i)
@@ -626,18 +624,17 @@ subroutine ML_inference(IST, FIA, OSS, G, IG, ML, dt_slow)
         IN_ANN(7,i,j) = G%mask2dT(i,j)
      enddo; enddo
 
-     !dCN = 0.0
+     dCN = 0.0
      call ANN_forward(IN_ANN, dCN, ML%ANN_weight_vec1, ML%ANN_weight_vec2, ML%ANN_weight_vec3, ML%ANN_weight_vec4, G)
 
-     !ML%dCN_restart(:,:,:) = 0.0
+     ML%dCN_restart(:,:,:) = 0.0
      do j=js,je ; do i=is,ie
         do k=1,ncat
            dCN(i,j,k) = G%mask2dT(i,j) * (dCN(i,j,k)*scale)
-           !ML%dCN_restart(i,j,k) = G%mask2dT(i,j) * (dCN(i,j,k)*scale)
+           ML%dCN_restart(i,j,k) = dCN(i,j,k)
         enddo
      enddo; enddo
 
-     !call postprocess(IST, ML%dCN_restart, G, IG)
      call postprocess(IST, dCN, G, IG)
      
      ML%SIC_filtered(:,:) = 0.0
