@@ -116,6 +116,7 @@ use SIS2_ice_thm,    only : enth_from_TS, Temp_from_En_S, T_freeze, ice_thermo_t
 use specified_ice,   only : specified_ice_dynamics, specified_ice_init, specified_ice_CS
 use specified_ice,   only : specified_ice_end, specified_ice_sum_output_CS
 use ice_bergs,       only : icebergs, icebergs_run, icebergs_init, icebergs_end
+use SIS_ML,          only : ML_init,ML_inference,register_ML_restarts !WG
 
 implicit none ; private
 
@@ -239,7 +240,7 @@ subroutine update_ice_slow_thermo(Ice)
   endif
 
   call slow_thermodynamics(sIST, dt_slow, Ice%sCS%slow_thermo_CSp, Ice%sCS%OSS, FIA, &
-                           Ice%sCS%XSF, Ice%sCS%IOF, sG, sIG)
+                           Ice%sCS%XSF, Ice%sCS%IOF, sG, sIG, ML=Ice%sCS%ML_CSp) !WG
   if (Ice%sCS%debug) then
     call Ice_public_type_chksum("Before set_ocean_top_fluxes", Ice, check_slow=.true.)
     call IOF_chksum("Before set_ocean_top_fluxes", Ice%sCS%IOF, sG)
@@ -318,7 +319,7 @@ subroutine update_ice_dynamics_trans(Ice, time_step, start_cycle, end_cycle, cyc
                             sG, sIG, Ice%sCS%SIS_tracer_flow_CSp)
   else ! This is the typical branch used by SIS2.
     call SIS_dynamics_trans(sIST, Ice%sCS%OSS, FIA, Ice%sCS%IOF, dt_slow, Ice%sCS%dyn_trans_CSp, &
-                            Ice%icebergs, sG, sIG, Ice%sCS%SIS_tracer_flow_CSp)
+                            Ice%icebergs, sG, sIG, Ice%sCS%SIS_tracer_flow_CSp, ML=Ice%sCS%ML_CSp) !WG
   endif
 
  ! Set up the stresses and surface pressure in the externally visible structure Ice.
@@ -1748,6 +1749,7 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
   ! ### These are just here to keep the order of SIS_parameter_doc.
   logical :: column_check
   real :: imb_tol
+  logical :: do_ML !WG
 
   if (associated(Ice%sCS)) then ; if (associated(Ice%sCS%IST)) then
     call SIS_error(WARNING, "ice_model_init called with an associated "// &
@@ -1970,6 +1972,8 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
                  "If true, recalculate the thermal updates from the fast \n"//&
                  "dynamics on the slowly evolving ice state, rather than \n"//&
                  "copying over the slow ice state to the fast ice state.", default=Concurrent)
+  call get_param(param_file, mdl, "DO_ML", do_ML, &
+                 "Perform machine learning based bias correction.", default=.false.) !WG
   if (write_geom<0 .or. write_geom>2) call SIS_error(FATAL,"SIS2: "//&
          "WRITE_GEOM must be equal to 0, 1 or 2.")
   write_geom_files = ((write_geom==2) .or. ((write_geom==1) .and. &
@@ -2587,8 +2591,6 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
 
     Ice%sCS%Time_step_slow = Time_step_slow
 
-    !call SIS_slow_thermo_init(Ice%sCS%Time, sG, sIG, param_file, Ice%sCS%diag, &
-    !                          Ice%sCS%slow_thermo_CSp, Ice%sCS%SIS_tracer_flow_CSp)
     call SIS_slow_thermo_init(Ice%sCS%Time, sG, sIG, param_file, Ice%sCS%diag, &
                               Ice%sCS%slow_thermo_CSp, Ice%sCS%SIS_tracer_flow_CSp)
 
@@ -2600,10 +2602,15 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
     else
       call SIS_dyn_trans_init(Ice%sCS%Time, sG, sIG, param_file, Ice%sCS%diag, &
                               Ice%sCS%dyn_trans_CSp, dirs%output_directory, Time_Init, &
-                              slab_ice=slab_ice, Ice_restart=Ice%Ice_Restart, restart_dir=dirs%restart_input_dir) !WG
+                              slab_ice=slab_ice)
       call SIS_slow_thermo_set_ptrs(Ice%sCS%slow_thermo_CSp, &
                    transport_CSp=SIS_dyn_trans_transport_CS(Ice%sCS%dyn_trans_CSp), &
                    sum_out_CSp=SIS_dyn_trans_sum_output_CS(Ice%sCS%dyn_trans_CSp))
+    endif
+
+    if (do_ML) then !WG
+       call ML_init(Ice%sCS%Time, sG, param_file, Ice%sCS%diag, Ice%sCS%ML_CSp)
+       call register_ML_restarts(Ice%sCS%ML_CSp, sG, Ice%Ice_restart, dirs%restart_input_dir)
     endif
 
     if (Ice%sCS%redo_fast_update) then

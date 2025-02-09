@@ -154,7 +154,7 @@ type ice_data_type !  ice_public_type
   type(restart_file_type), pointer :: Ice_restart => NULL()
           !< A pointer to the slow ice restart control structure
   type(restart_file_type), pointer :: Ice_fast_restart => NULL()
-          !< A pointer to the fast ice restart control structure
+  !< A pointer to the fast ice restart control structure
 end type ice_data_type !  ice_public_type
 
 contains

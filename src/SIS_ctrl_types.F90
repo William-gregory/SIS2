@@ -31,6 +31,7 @@ use SIS_diag_mediator, only : register_SIS_diag_field, register_static_field
 use SIS_sum_output, only : SIS_sum_out_CS
 ! use SIS_tracer_registry, only : SIS_tracer_registry_type
 use SIS_tracer_flow_control, only : SIS_tracer_flow_control_CS
+use SIS_ML,             only : ML_CS !WG
 
 implicit none ; private
 
@@ -106,7 +107,7 @@ type SIS_slow_CS
   logical :: pass_stress_mag !< If true, calculate the time-mean magnitude of the
                             !! ice-ocean stresses and pass it to the ocean.
   logical :: do_icebergs    !< If true, use the Lagrangian iceberg code, which
-                            !! modifies the calving field among other things.
+  !! modifies the calving field among other things.
   logical :: pass_iceberg_area_to_ocean !< If true, iceberg area is passed through coupler
                             !! (must have ICEBERGS_APPLY_RIGID_BOUNDARY=True in MOM_input)
   logical :: berg_windstress_bug = .false. !< If true, use older code that applied
@@ -129,6 +130,7 @@ type SIS_slow_CS
                             !! structure for the slow ice thermodynamics.
   type(dyn_trans_CS),   pointer :: dyn_trans_CSp => NULL() !< A pointer to the control
                             !! structure for the ice dynamics and transport.
+  type(ML_CS),          pointer :: ML_CSp => NULL() !< Control structure for ML inference !WG
   type(specified_ice_CS),   pointer :: specified_ice_CSp => NULL() !< A pointer to the control
                             !! structure for the specified ice.
   type(fast_thermo_CS), pointer :: fast_thermo_CSp => NULL() !< A pointer to the control
