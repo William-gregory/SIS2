@@ -110,8 +110,7 @@ type, public :: ML_CS
   
   type(SIS_diag_ctrl), pointer :: diag => NULL() !< A type that regulates diagnostics output
   !>@{ Diagnostic handles
-  integer :: id_dcn = -1, id_sicnet = -1, id_uinet = -1, id_vinet = -1, id_hinet, id_swnet = -1
-  integer :: id_tsnet = -1, id_sssnet = -1, id_cnnet = -1, id_sstnet = -1
+  integer :: id_dcn = -1
   !>@}
   
 end type ML_CS
@@ -135,25 +134,7 @@ subroutine ML_init(Time, G, param_file, diag, CS)
   CS%diag => diag
   CS%id_dcn    = register_diag_field('ice_model', 'dCN', diag%axesTc, Time, &
        'ML-based correction to ice concentration', 'area fraction', missing_value=missing)
-  CS%id_sicnet    = register_diag_field('ice_model', 'SICnet', diag%axesT1, Time, &
-       'ML-based correction to ice concentration', 'area fraction', missing_value=missing)
-  CS%id_sstnet    = register_diag_field('ice_model', 'SSTnet', diag%axesT1, Time, &
-       'ML-based correction to ice concentration', 'deg C', missing_value=missing)
-  CS%id_uinet    = register_diag_field('ice_model', 'UInet', diag%axesT1, Time, &
-       'ML-based correction to ice concentration', 'm s-1', missing_value=missing)
-  CS%id_vinet    = register_diag_field('ice_model', 'VInet', diag%axesT1, Time, &
-       'ML-based correction to ice concentration', 'm s-1', missing_value=missing)
-  CS%id_hinet    = register_diag_field('ice_model', 'HInet', diag%axesT1, Time, &
-       'ML-based correction to ice concentration', 'm', missing_value=missing)
-  CS%id_swnet    = register_diag_field('ice_model', 'SWnet', diag%axesT1, Time, &
-       'ML-based correction to ice concentration', 'W m-2', missing_value=missing)
-  CS%id_tsnet    = register_diag_field('ice_model', 'TSnet', diag%axesT1, Time, &
-       'ML-based correction to ice concentration', 'deg C', missing_value=missing)
-  CS%id_sssnet    = register_diag_field('ice_model', 'SSSnet', diag%axesT1, Time, &
-       'ML-based correction to ice concentration', 'g/kg', missing_value=missing)
-  CS%id_cnnet    = register_diag_field('ice_model', 'CNnet', diag%axesTc, Time, &
-       'ML-based correction to ice concentration', 'area fraction', missing_value=missing)
-
+ 
   call get_param(param_file, mdl, "RESTARTFILE", CS%restart_file, &
                  "The name of the restart file.", default="ice_model.res.nc")
 
@@ -527,13 +508,11 @@ subroutine ML_inference(IST, FIA, OSS, G, IG, ML, dt_slow)
                                    :: dSIC       !< CNN predictions of aggregate SIC corrections
   real, dimension(SZI_(G),SZJ_(G),5) &
                                    :: dCN        !< ANN predictions of category SIC corrections
-  real, dimension(SZI_(G),SZJ_(G)) &
-                                   :: net_sw     !< net shortwave radiation [Wm-2]
   
-  integer :: i, j, k, b, m
-  integer :: is, ie, js, je, ncat, nlay, nb
+  integer :: i, j, k
+  integer :: is, ie, js, je, ncat
   integer :: isdw, iedw, jsdw, jedw
-  real    :: cvr, sit, sw_cat
+  real    :: cvr, sit
   real    :: irho_ice, rho_ice
   real    :: scale, nsteps, nsteps_i
   
@@ -579,9 +558,8 @@ subroutine ML_inference(IST, FIA, OSS, G, IG, ML, dt_slow)
   scale = ML%ML_freq/432000.0 !dt_slow/432000.0 !Network was trained on 5-day (432000-second) increments
   nsteps = ML%ML_freq/dt_slow !number of timesteps in ML%ML_freq
   nsteps_i = dt_slow/ML%ML_freq
-  is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; ncat = IG%CatIce ; nlay = IG%NkIce
+  is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; ncat = IG%CatIce
   isdw = ML%isdw; iedw = ML%iedw; jsdw = ML%jsdw; jedw = ML%jedw
-  !nb = size(FIA%flux_sw_top,4)
 
   dCN = 0.0
   do j=js,je ; do i=is,ie
@@ -594,17 +572,6 @@ subroutine ML_inference(IST, FIA, OSS, G, IG, ML, dt_slow)
   !   call postprocess(IST, dCN, G, IG)
   !endif
 
-  !net_sw = 0.0
-  !do j=js,je ; do i=is,ie !compute net shortwave
-  !   do k=0,ncat
-  !      sw_cat = 0
-  !      do b=1,nb
-  !         sw_cat = sw_cat + FIA%flux_sw_top(i,j,k,b)
-  !      enddo
-  !      net_sw(i,j) = net_sw(i,j) + IST%part_size(i,j,k) * sw_cat
-  !   enddo
-  !enddo; enddo
-
   !weighted sum of inputs over nsteps, to produce an n-day mean
   cvr = 0.0
   do j=js,je ; do i=is,ie
@@ -612,10 +579,6 @@ subroutine ML_inference(IST, FIA, OSS, G, IG, ML, dt_slow)
      cvr = 1 - IST%part_size(i,j,0)
      ML%SIC_filtered(i,j) = ML%SIC_filtered(i,j) + (cvr*nsteps_i)
      ML%SST_filtered(i,j) = ML%SST_filtered(i,j) + (OSS%SST_C(i,j)*nsteps_i)
-     !ML%UI_filtered(i,j) = ML%UI_filtered(i,j) + (IST%u_ice_C(i,j)*nsteps_i)
-     !ML%VI_filtered(i,j) = ML%VI_filtered(i,j) + (IST%v_ice_C(i,j)*nsteps_i)
-     !ML%SW_filtered(i,j) =  ML%SW_filtered(i,j) + (net_sw(i,j)*nsteps_i) 
-     !ML%TS_filtered(i,j) =  ML%TS_filtered(i,j) + (FIA%Tskin_avg(i,j)*nsteps_i)
      ML%SSS_filtered(i,j) = ML%SSS_filtered(i,j) + (OSS%s_surf(i,j)*nsteps_i)
      ML%land_mask(i,j) = G%mask2dT(i,j)
      do k=1,ncat
@@ -628,16 +591,6 @@ subroutine ML_inference(IST, FIA, OSS, G, IG, ML, dt_slow)
         ML%HI_filtered(i,j) = ML%HI_filtered(i,j) + 0.0
      endif
   enddo; enddo
-
-  if (ML%id_sicnet>0) call post_data(ML%id_sicnet, ML%SIC_filtered, ML%diag)
-  if (ML%id_sstnet>0) call post_data(ML%id_sstnet, ML%SST_filtered, ML%diag)
-  !if (ML%id_uinet>0) call post_data(ML%id_uinet, ML%UI_filtered, ML%diag)
-  !if (ML%id_vinet>0) call post_data(ML%id_vinet, ML%VI_filtered, ML%diag)
-  if (ML%id_hinet>0) call post_data(ML%id_hinet, ML%HI_filtered, ML%diag)
-  !if (ML%id_swnet>0) call post_data(ML%id_swnet, ML%SW_filtered, ML%diag)
-  !if (ML%id_tsnet>0) call post_data(ML%id_tsnet, ML%TS_filtered, ML%diag)
-  if (ML%id_sssnet>0) call post_data(ML%id_sssnet, ML%SSS_filtered, ML%diag)
-  if (ML%id_cnnet>0) call post_data(ML%id_cnnet, ML%CN_filtered, ML%diag)
   
   if ( ML%count == nsteps ) then !nsteps have passed, do inference
 
@@ -690,7 +643,7 @@ subroutine ML_inference(IST, FIA, OSS, G, IG, ML, dt_slow)
         enddo
      enddo; enddo
 
-     !call postprocess(IST, dCN, G, IG)
+     call postprocess(IST, dCN, G, IG)
      
      ML%SIC_filtered(:,:) = 0.0
      ML%SST_filtered(:,:) = 0.0

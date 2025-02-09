@@ -215,8 +215,6 @@ subroutine post_flux_diagnostics(IST, FIA, IOF, CS, G, IG, Idt_slow, ML) !WG
           ML%SW_filtered(i,j) = ML%SW_filtered(i,j) + (net_sw(i,j)*nsteps_i)
           ML%TS_filtered(i,j) = ML%TS_filtered(i,j) + (FIA%Tskin_avg(i,j)*nsteps_i)
        enddo; enddo
-       if (ML%id_swnet>0) call post_data(ML%id_swnet, ML%SW_filtered, ML%diag)
-       if (ML%id_tsnet>0) call post_data(ML%id_tsnet, ML%TS_filtered, ML%diag)
     endif
     if (FIA%id_sw>0) call post_data(FIA%id_sw, net_sw, CS%diag)
     if (FIA%id_albedo>0) then

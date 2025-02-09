@@ -464,8 +464,6 @@ subroutine SIS_dynamics_trans(IST, OSS, FIA, IOF, dt_slow, CS, icebergs_CS, G, I
                 ML%UI_filtered(i,j) = ML%UI_filtered(i,j) + (IST%u_ice_C(i,j)*nsteps_i)
                 ML%VI_filtered(i,j) = ML%VI_filtered(i,j) + (IST%v_ice_C(i,j)*nsteps_i)
              enddo; enddo
-             if (ML%id_uinet>0) call post_data(ML%id_uinet, ML%UI_filtered, ML%diag)
-             if (ML%id_vinet>0) call post_data(ML%id_vinet, ML%VI_filtered, ML%diag)
           endif
          
           call mpp_clock_end(iceClocka)
