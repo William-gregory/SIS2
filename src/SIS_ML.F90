@@ -555,7 +555,7 @@ subroutine ML_inference(IST, FIA, OSS, G, IG, ML, dt_slow)
   call get_SIS2_thermo_coefs(IST%ITV, rho_ice=rho_ice)
 
   irho_ice = 1/rho_ice
-  scale = ML%ML_freq/432000.0 !dt_slow/432000.0 !Network was trained on 5-day (432000-second) increments
+  scale = dt_slow/432000.0 !Network was trained on 5-day (432000-second) increments
   nsteps = ML%ML_freq/dt_slow !number of timesteps in ML%ML_freq
   nsteps_i = dt_slow/ML%ML_freq
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; ncat = IG%CatIce
@@ -568,9 +568,9 @@ subroutine ML_inference(IST, FIA, OSS, G, IG, ML, dt_slow)
      enddo
   enddo; enddo
 
-  !if ( (.not. all(dCN==0.0)) .and. (ML%count /= nsteps) ) then
-  !   call postprocess(IST, dCN, G, IG)
-  !endif
+  if ( (.not. all(dCN==0.0)) .and. (ML%count /= nsteps) ) then
+     call postprocess(IST, dCN, G, IG)
+  endif
 
   !weighted sum of inputs over nsteps, to produce an n-day mean
   cvr = 0.0
