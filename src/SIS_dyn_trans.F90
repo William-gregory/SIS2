@@ -65,7 +65,7 @@ use SIS2_ice_thm,      only : get_SIS2_thermo_coefs
 use slab_ice,          only : slab_ice_advect, slab_ice_dynamics
 use ice_bergs,         only : icebergs, icebergs_run, icebergs_init, icebergs_end
 use ice_grid,          only : ice_grid_type
-use SIS_ML,            only : ML_CS,ML_init,ML_inference,register_ML_restarts !WG
+use SIS_ML,            only : ML_CS, ML_inference !WG
 
 implicit none ; private
 
@@ -129,7 +129,6 @@ type dyn_trans_CS ; private
   logical :: itd_landfast     !< If true, use the probabilistic landfast ice parameterization.
 
   !!! WG !!!
-  type(ML_CS) :: ML    !< Control structure for the ML model
   logical     :: do_ML !< If true, perform ML-based bias correction
   !!! WG end !!!
 
@@ -323,7 +322,7 @@ end subroutine update_icebergs
 
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
 !> SIS_dynamics_trans makes the calls to do ice dynamics and mass and tracer transport
-subroutine SIS_dynamics_trans(IST, OSS, FIA, IOF, dt_slow, CS, icebergs_CS, G, US, IG, tracer_CSp, OBC)
+subroutine SIS_dynamics_trans(IST, OSS, FIA, IOF, dt_slow, CS, icebergs_CS, G, US, IG, tracer_CSp, OBC, ML) !WG
   type(ice_state_type),       intent(inout) :: IST !< A type describing the state of the sea ice
   type(ocean_sfc_state_type), intent(in)    :: OSS !< A structure containing the arrays that describe
                                                    !! the ocean's surface state for the ice model.
@@ -340,6 +339,7 @@ subroutine SIS_dynamics_trans(IST, OSS, FIA, IOF, dt_slow, CS, icebergs_CS, G, U
   type(SIS_tracer_flow_control_CS), pointer :: tracer_CSp !< The structure for controlling calls to
                                                    !! auxiliary ice tracer packages
   type(ice_OBC_type),         pointer       :: OBC  !< Open boundary structure.
+  type(ML_CS),       optional,intent(inout) :: ML  !< Control structure for the ML model(s) !WG
 
   ! Local variables
   real, dimension(SZI_(G),SZJ_(G))   :: &
@@ -381,6 +381,7 @@ subroutine SIS_dynamics_trans(IST, OSS, FIA, IOF, dt_slow, CS, icebergs_CS, G, U
   integer :: isd, ied, jsd, jed
   integer :: ndyn_steps, nds ! The number of dynamic steps.
   integer :: nadv_cycle, nac ! The number of tracer advective cycles in this call.
+  real    :: nsteps_i !WG
 
   isc = G%isc ; iec = G%iec ; jsc = G%jsc ; jec = G%jec ; ncat = IG%CatIce
   isd = G%isd ; ied = G%ied ; jsd = G%jsd ; jed = G%jed
@@ -499,6 +500,15 @@ subroutine SIS_dynamics_trans(IST, OSS, FIA, IOF, dt_slow, CS, icebergs_CS, G, U
                                 OSS%u_ocn_C, OSS%v_ocn_C, WindStr_x_Cu, WindStr_y_Cv, OSS%sea_lev, &
                                 str_x_ice_ocn_Cu, str_y_ice_ocn_Cv, dt_slow_dyn, G, US, CS%SIS_C_dyn_CSp)
           endif
+
+          if (CS%do_ML) then !WG
+             nsteps_i = dt_slow_dyn/ML%ML_freq !number of dynamics timesteps in ML%ML_freq
+             do j=jsd,jed ; do i=isd,ied 
+                ML%UI_filtered(i,j) = ML%UI_filtered(i,j) + (IST%u_ice_C(i,j)*nsteps_i)
+                ML%VI_filtered(i,j) = ML%VI_filtered(i,j) + (IST%v_ice_C(i,j)*nsteps_i)
+             enddo; enddo
+          endif
+          
           call cpu_clock_end(iceClocka)
 
           if (CS%debug) call uvchksum("After ice_dynamics [uv]_ice_C", IST%u_ice_C, IST%v_ice_C, G, scale=US%L_T_to_m_s)
@@ -654,9 +664,9 @@ subroutine SIS_dynamics_trans(IST, OSS, FIA, IOF, dt_slow, CS, icebergs_CS, G, U
 
   !!! WG !!!
   if (CS%do_ML) then
-       call enable_SIS_averaging(US%T_to_s*dt_slow, CS%Time, CS%ML%diag)
-       call ML_inference(IST, FIA, OSS, G, IG, CS%ML, dt_slow)
-       call disable_SIS_averaging(CS%ML%diag)
+       call enable_SIS_averaging(US%T_to_s*dt_slow, CS%Time, ML%diag)
+       call ML_inference(IST, FIA, OSS, G, IG, ML, dt_slow)
+       call disable_SIS_averaging(ML%diag)
   endif
   !!! WG end !!!
   
@@ -2336,7 +2346,7 @@ end subroutine SIS_dyn_trans_read_alt_restarts
 !> SIS_dyn_trans_init initializes ice model data, parameters and diagnostics
 !!   associated with the SIS2 dynamics and transport modules.
 subroutine SIS_dyn_trans_init(Time, G, US, IG, param_file, diag, CS, output_dir, Time_init, &
-                              slab_ice, Ice_restart, restart_dir) !WG
+                              slab_ice)
   type(time_type),     target, intent(in)    :: Time !< The sea-ice model's clock,
                                                      !! set with the current model time.
   type(SIS_hor_grid_type),     intent(in)    :: G    !< The horizontal grid structure
@@ -2349,8 +2359,6 @@ subroutine SIS_dyn_trans_init(Time, G, US, IG, param_file, diag, CS, output_dir,
   type(time_type),             intent(in)    :: Time_Init !< Starting time of the model integration
   logical,           optional, intent(in)    :: slab_ice  !< If true, use the archaic GFDL slab ice dynamics
                                                           !!  and transport.
-  type(SIS_restart_CS),        pointer       :: Ice_restart !< A pointer to the restart type for the ice !WG
-  character(len=*),            intent(in)    :: restart_dir !< A directory in which to find the restart file !WG
 
   ! This include declares and sets the variable "version".
 #  include "version_variable.h"
@@ -2463,15 +2471,8 @@ subroutine SIS_dyn_trans_init(Time, G, US, IG, param_file, diag, CS, output_dir,
   call get_param(param_file, mdl, "VERBOSE", CS%verbose, &
                  "If true, write out verbose diagnostics.", default=.false., &
                  debuggingParam=.true.)
-
-  !!! WG !!!
   call get_param(param_file, mdl, "DO_ML", CS%do_ML, &
-  "Perform machine learning based bias correction.", default=.false.)
-  if ( CS%do_ML ) then
-     call ML_init(CS%Time, G, param_file, CS%diag, CS%ML)
-     call register_ML_restarts(CS%ML, G, Ice_restart, restart_dir)
-  endif
-  !!! WG END !!!
+                 "Perform machine learning based bias correction.", default=.false.) !WG
 
   CS%complete_ice_cover = 1.0 - 2.0*epsilon(CS%complete_ice_cover)
 

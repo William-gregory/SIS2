@@ -59,6 +59,7 @@ use SIS2_ice_thm,      only : SIS2_ice_thm_CS, SIS2_ice_thm_init, SIS2_ice_thm_e
 use SIS2_ice_thm,      only : ice_resize_SIS2, add_frazil_SIS2, rebalance_ice_layers
 use SIS2_ice_thm,      only : get_SIS2_thermo_coefs, enthalpy_liquid_freeze
 use SIS2_ice_thm,      only : enth_from_TS, Temp_from_En_S, enthalpy_liquid, calculate_T_freeze
+use SIS_ML,            only : ML_CS !WG
 
 implicit none ; private
 
@@ -134,6 +135,8 @@ type slow_thermo_CS ; private
   type(SIS_tracer_flow_control_CS), pointer :: tracer_flow_CSp => NULL()
   !< A pointers to the control structures for a subsidiary module
 
+  logical :: do_ML !WG
+
   !>@{ Diagnostic IDs
   integer :: id_qflim=-1, id_qfres=-1, id_fwnudge=-1, id_net_melt=-1, id_CMOR_melt=-1
   integer :: id_lsrc=-1, id_lsnk=-1, id_bsnk=-1, id_sn2ic=-1
@@ -148,7 +151,7 @@ contains
 
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
 !> write out any diagnostics of surface fluxes
-subroutine post_flux_diagnostics(IST, FIA, IOF, CS, G, US, IG, Idt_slow)
+subroutine post_flux_diagnostics(IST, FIA, IOF, CS, G, US, IG, Idt_slow, ML) !WG
   type(ice_state_type),      intent(in) :: IST !< A type describing the state of the sea ice
   type(fast_ice_avg_type),   intent(in) :: FIA !< A type containing averages of fields
                                                !! (mostly fluxes) over the fast updates
@@ -160,12 +163,14 @@ subroutine post_flux_diagnostics(IST, FIA, IOF, CS, G, US, IG, Idt_slow)
   type(ice_grid_type),       intent(in) :: IG  !< The sea-ice specific grid type
   real,                      intent(in) :: Idt_slow !< The inverse of the slow thermodynamic
                                                !! time step [T-1 ~> s-1]
+  type(ML_CS),   optional,intent(inout) :: ML  !< Control structure for the ML model(s) !WG
 
   real, dimension(G%isd:G%ied,G%jsd:G%jed) :: tmp2d, net_sw, sw_dn ! Shortwave fluxes[Q R Z T-1 ~> W m-2]
   real :: sw_cat ! [Q R Z T-1 ~> W m-2]
   real, parameter :: missing = -1e34  ! A missing data fill value
   integer :: i, j, k, m, n, b, nb, isc, iec, jsc, jec, ncat
-
+  real :: nsteps_i !WG
+  
   isc = G%isc ; iec = G%iec ; jsc = G%jsc ; jec = G%jec ; ncat = IG%CatIce
   nb = size(FIA%flux_sw_top,4)
   ! Flux diagnostics
@@ -190,6 +195,13 @@ subroutine post_flux_diagnostics(IST, FIA, IOF, CS, G, US, IG, Idt_slow)
         net_sw(i,j) = net_sw(i,j) + IST%part_size(i,j,k) * sw_cat
       enddo; enddo
     enddo
+    if (CS%do_ML) then !WG
+       nsteps_i = (1/Idt_slow)/ML%ML_freq
+       do j=jsc,jec ; do i=isc,iec
+          ML%SW_filtered(i,j) = ML%SW_filtered(i,j) + (net_sw(i,j)*nsteps_i)
+          ML%TS_filtered(i,j) = ML%TS_filtered(i,j) + (FIA%Tskin_avg(i,j)*nsteps_i)
+       enddo; enddo
+    endif
     if (FIA%id_sw>0) call post_data(FIA%id_sw, net_sw, CS%diag)
     if (FIA%id_albedo>0) then
       do j=jsc,jec ; do i=isc,iec
@@ -293,7 +305,7 @@ end subroutine post_flux_diagnostics
 
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
 !> slow_thermodynamics takes care of slow ice thermodynamics and mass changes
-subroutine slow_thermodynamics(IST, dt_slow, CS, OSS, FIA, XSF, IOF, G, US, IG)
+subroutine slow_thermodynamics(IST, dt_slow, CS, OSS, FIA, XSF, IOF, G, US, IG, ML) !WG
 
   type(ice_state_type),       intent(inout) :: IST !< A type describing the state of the sea ice
   real,                       intent(in)    :: dt_slow !< The thermodynamic step [T ~> s].
@@ -310,6 +322,7 @@ subroutine slow_thermodynamics(IST, dt_slow, CS, OSS, FIA, XSF, IOF, G, US, IG)
   type(SIS_hor_grid_type),    intent(inout) :: G   !< The horizontal grid type
   type(unit_scale_type),      intent(in)    :: US  !< A structure with unit conversion factors
   type(ice_grid_type),        intent(inout) :: IG  !< The sea-ice specific grid type
+  type(ML_CS),       optional,intent(inout) :: ML  !< Control structure for the ML model(s) !WG
 
   ! Local variables
   real, dimension(SZI_(G),SZJ_(G))   :: &
@@ -413,7 +426,7 @@ subroutine slow_thermodynamics(IST, dt_slow, CS, OSS, FIA, XSF, IOF, G, US, IG)
   call enable_SIS_averaging(US%T_to_s*dt_slow, CS%Time, CS%diag)
 
   ! Save out diagnostics of fluxes.  This must go before SIS2_thermodynamics.
-  call post_flux_diagnostics(IST, FIA, IOF, CS, G, US, IG, Idt_slow)
+  call post_flux_diagnostics(IST, FIA, IOF, CS, G, US, IG, Idt_slow, ML) !WG
 
   call disable_SIS_averaging(CS%diag)
 
@@ -1547,6 +1560,8 @@ subroutine SIS_slow_thermo_init(Time, G, US, IG, param_file, diag, CS, tracer_fl
                  "sensible, and issue warnings if they are not.  This "//&
                  "does not change answers, but can increase model run time.", &
                  default=.true.)
+  call get_param(param_file, mdl, "DO_ML", CS%do_ML, &
+                 "Perform machine learning based bias correction.", default=.false.) !WG
 
   CS%id_lsrc = register_diag_field('ice_model','LSRC', diag%axesT1, Time, &
                'frozen water local source', 'kg/(m^2*yr)', missing_value=missing)

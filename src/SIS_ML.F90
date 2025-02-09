@@ -459,13 +459,11 @@ subroutine ML_inference(IST, FIA, OSS, G, IG, ML, dt_slow)
                                    :: dSIC       !< CNN predictions of aggregate SIC corrections
   real, dimension(SZI_(G),SZJ_(G),5) &
                                    :: dCN        !< ANN predictions of category SIC corrections
-  real, dimension(SZI_(G),SZJ_(G)) &
-                                   :: net_sw     !< net shortwave radiation [Wm-2]
   
-  integer :: i, j, k, b, m
-  integer :: is, ie, js, je, ncat, nlay, nb
+  integer :: i, j, k
+  integer :: is, ie, js, je, ncat
   integer :: isdw, iedw, jsdw, jedw
-  real    :: cvr, sit, sw_cat
+  real    :: cvr, sit
   real    :: irho_ice, rho_ice
   real    :: scale, nsteps, nsteps_i
   
@@ -511,9 +509,8 @@ subroutine ML_inference(IST, FIA, OSS, G, IG, ML, dt_slow)
   scale = dt_slow/432000.0 !Network was trained on 5-day (432000-second) increments
   nsteps = ML%ML_freq/dt_slow !number of timesteps in ML%ML_freq
   nsteps_i = dt_slow/ML%ML_freq
-  is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; ncat = IG%CatIce ; nlay = IG%NkIce
+  is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; ncat = IG%CatIce
   isdw = ML%isdw; iedw = ML%iedw; jsdw = ML%jsdw; jedw = ML%jedw
-  nb = size(FIA%flux_sw_top,4)
 
   dCN = 0.0
   do j=js,je ; do i=is,ie
@@ -526,17 +523,6 @@ subroutine ML_inference(IST, FIA, OSS, G, IG, ML, dt_slow)
      call postprocess(IST, dCN, G, IG)
   endif
 
-  net_sw = 0.0
-  do j=js,je ; do i=is,ie !compute net shortwave
-     do k=0,ncat
-        sw_cat = 0
-        do b=1,nb
-           sw_cat = sw_cat + FIA%flux_sw_top(i,j,k,b)
-        enddo
-        net_sw(i,j) = net_sw(i,j) + IST%part_size(i,j,k) * sw_cat
-     enddo
-  enddo; enddo
-
   !Produce mean input variables over nsteps
   cvr = 0.0
   do j=js,je ; do i=is,ie
@@ -544,10 +530,6 @@ subroutine ML_inference(IST, FIA, OSS, G, IG, ML, dt_slow)
      cvr = 1 - IST%part_size(i,j,0)
      ML%SIC_filtered(i,j) = ML%SIC_filtered(i,j) + (cvr*nsteps_i)
      ML%SST_filtered(i,j) = ML%SST_filtered(i,j) + (OSS%SST_C(i,j)*nsteps_i)
-     ML%UI_filtered(i,j) = ML%UI_filtered(i,j) + (IST%u_ice_C(i,j)*nsteps_i)
-     ML%VI_filtered(i,j) = ML%VI_filtered(i,j) + (IST%v_ice_C(i,j)*nsteps_i)
-     ML%SW_filtered(i,j) =  ML%SW_filtered(i,j) + (net_sw(i,j)*nsteps_i) 
-     ML%TS_filtered(i,j) =  ML%TS_filtered(i,j) + (FIA%Tskin_avg(i,j)*nsteps_i)
      ML%SSS_filtered(i,j) = ML%SSS_filtered(i,j) + (OSS%s_surf(i,j)*nsteps_i)
      ML%land_mask(i,j) = G%mask2dT(i,j)
      do k=1,ncat

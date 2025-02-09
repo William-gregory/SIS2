@@ -114,6 +114,7 @@ use SIS2_ice_thm,      only : ice_temp_SIS2, SIS2_ice_thm_init, SIS2_ice_thm_end
 use SIS2_ice_thm,      only : ice_thermo_init, ice_thermo_end, T_freeze, ice_thermo_type
 use specified_ice,     only : specified_ice_dynamics, specified_ice_init, specified_ice_CS
 use specified_ice,     only : specified_ice_end, specified_ice_sum_output_CS
+use SIS_ML,            only : ML_init,ML_inference,register_ML_restarts !WG
 
 implicit none ; private
 
@@ -244,7 +245,7 @@ subroutine update_ice_slow_thermo(Ice)
   endif
 
   call slow_thermodynamics(sIST, dt_slow, Ice%sCS%slow_thermo_CSp, Ice%sCS%OSS, FIA, &
-                           Ice%sCS%XSF, Ice%sCS%IOF, sG, US, sIG)
+                           Ice%sCS%XSF, Ice%sCS%IOF, sG, US, sIG, ML=Ice%sCS%ML_CSp) !WG
   if (Ice%sCS%debug) then
     call Ice_public_type_chksum("Before set_ocean_top_fluxes", Ice, check_slow=.true.)
     call IOF_chksum("Before set_ocean_top_fluxes", Ice%sCS%IOF, sG, US, thermo_fluxes=.true.)
@@ -323,7 +324,7 @@ subroutine update_ice_dynamics_trans(Ice, time_step, start_cycle, end_cycle, cyc
                             sG, US, sIG, Ice%sCS%SIS_tracer_flow_CSp, Ice%OBC)
   else ! This is the typical branch used by SIS2.
     call SIS_dynamics_trans(sIST, Ice%sCS%OSS, FIA, Ice%sCS%IOF, dt_slow, Ice%sCS%dyn_trans_CSp, &
-                            Ice%icebergs, sG, US, sIG, Ice%sCS%SIS_tracer_flow_CSp, Ice%OBC)
+                            Ice%icebergs, sG, US, sIG, Ice%sCS%SIS_tracer_flow_CSp, Ice%OBC, ML=Ice%sCS%ML_CSp) !WG
   endif
 
  ! Set up the stresses and surface pressure in the externally visible structure Ice.
@@ -1773,6 +1774,7 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
   logical :: read_aux_restart
   logical :: split_restart_files
   logical :: is_restart = .false.
+  logical :: do_ML !WG
   character(len=16) :: stagger, dflt_stagger
   character(len=200) :: hlim_string
   type(ice_OBC_type), pointer :: OBC_in => NULL()
@@ -2002,6 +2004,8 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
   call get_param(param_file, mdl, "READ_HLIM_VALS", read_hlim_vals, &
                  "If true, read the lower limits on the ice thickness"//&
                  "categories.", default=.false.)
+  call get_param(param_file, mdl, "DO_ML", do_ML, &
+                 "Perform machine learning based bias correction.", default=.false.) !WG
 
   nCat_dflt = 5 ; if (slab_ice) nCat_dflt = 1
   opm_dflt = 0.0 ; if (redo_fast_update) opm_dflt = 1.0e-40
@@ -2418,8 +2422,6 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
 
     call SIS_slow_thermo_init(Ice%sCS%Time, sG, US, sIG, param_file, Ice%sCS%diag, &
                               Ice%sCS%slow_thermo_CSp, Ice%sCS%SIS_tracer_flow_CSp)
-    !call SIS_slow_thermo_init(Ice%sCS%Time, sG, US, sIG, param_file, Ice%sCS%diag, &
-    !                          Ice%sCS%slow_thermo_CSp, Ice%sCS%SIS_tracer_flow_CSp, Ice%Ice_Restart) !WG
 
     if (specified_ice) then
       recategorize_ice = .false.
@@ -2443,15 +2445,17 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
         deallocate(h_ice_input)
       endif
     else
-      !call SIS_dyn_trans_init(Ice%sCS%Time, sG, US, sIG, param_file, Ice%sCS%diag, &
-      !                        Ice%sCS%dyn_trans_CSp, dirs%output_directory, Time_Init, &
-      !                        slab_ice=slab_ice)
       call SIS_dyn_trans_init(Ice%sCS%Time, sG, US, sIG, param_file, Ice%sCS%diag, &
                               Ice%sCS%dyn_trans_CSp, dirs%output_directory, Time_Init, &
-                              slab_ice=slab_ice, Ice_restart=Ice%Ice_Restart, restart_dir=dirs%restart_input_dir) !WG 
+                              slab_ice=slab_ice)
       call SIS_slow_thermo_set_ptrs(Ice%sCS%slow_thermo_CSp, &
                    transport_CSp=SIS_dyn_trans_transport_CS(Ice%sCS%dyn_trans_CSp), &
                    sum_out_CSp=SIS_dyn_trans_sum_output_CS(Ice%sCS%dyn_trans_CSp))
+    endif
+
+    if (do_ML) then !WG
+       call ML_init(Ice%sCS%Time, sG, param_file, Ice%sCS%diag, Ice%sCS%ML_CSp)
+       call register_ML_restarts(Ice%sCS%ML_CSp, sG, Ice%Ice_restart, dirs%restart_input_dir)
     endif
 
 

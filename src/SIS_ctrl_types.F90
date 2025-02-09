@@ -24,6 +24,7 @@ use SIS_types,         only : ice_state_type, ice_ocean_flux_type, ocean_sfc_sta
 use SIS_types,         only : fast_ice_avg_type, ice_rad_type, simple_OSS_type
 use SIS_types,         only : total_sfc_flux_type
 use specified_ice,     only : specified_ice_CS
+use SIS_ML,            only : ML_CS !WG
 
 implicit none ; private
 
@@ -123,6 +124,7 @@ type SIS_slow_CS
                             !! structure for the slow ice thermodynamics.
   type(dyn_trans_CS),   pointer :: dyn_trans_CSp => NULL() !< A pointer to the control
                             !! structure for the ice dynamics and transport.
+  type(ML_CS)                   :: ML_CSp !< Control structure for ML inference !WG
   type(specified_ice_CS),   pointer :: specified_ice_CSp => NULL() !< A pointer to the control
                             !! structure for the specified ice.
   type(fast_thermo_CS), pointer :: fast_thermo_CSp => NULL() !< A pointer to the control
