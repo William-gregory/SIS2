@@ -568,7 +568,7 @@ subroutine ML_inference(IST, FIA, OSS, G, IG, ML, dt_slow)
        cn4_std = 6.17786223701505, &
        cn5_std = 3.3852270028512286
 
-  scale = ML%ML_freq/432000.0 !dt_slow/432000.0 !Network was trained on 5-day (432000-second) increments
+  scale = dt_slow/432000.0 !Network was trained on 5-day (432000-second) increments
   nsteps = ML%ML_freq/dt_slow !number of timesteps in ML%ML_freq
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; ncat = IG%CatIce
   isdw = ML%isdw; iedw = ML%iedw; jsdw = ML%jsdw; jedw = ML%jedw
@@ -581,9 +581,9 @@ subroutine ML_inference(IST, FIA, OSS, G, IG, ML, dt_slow)
      enddo
   enddo; enddo
 
-  !if ( (.not. all(dCN==0.0)) .and. (ML%count /= nsteps) ) then
-  !   call postprocess(IST, dCN, G, IG)
-  !endif
+  if ( (.not. all(dCN==0.0)) .and. (ML%count /= nsteps) ) then
+     call postprocess(IST, dCN, G, IG)
+  endif
   
   if ( ML%count == nsteps ) then !nsteps have passed, do inference
 
