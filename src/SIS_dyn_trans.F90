@@ -797,7 +797,7 @@ subroutine ice_state_cleanup(IST, OSS, IOF, dt_slow, G, IG, CS, tracer_CSp, ML) 
   call mpp_clock_begin(iceClock9)
 
   call enable_SIS_averaging(dt_slow, CS%Time, CS%diag)
-  call post_ice_state_diagnostics(CS%IDs, IST, OSS, IOF, dt_slow, CS%Time, G, IG, CS%diag, ML) !WG
+  call post_ice_state_diagnostics(CS%IDs, IST, OSS, IOF, dt_slow, CS%Time, G, IG, CS%diag, ML, CS%do_ML) !WG
   call disable_SIS_averaging(CS%diag)
 
   if (CS%verbose) call ice_line(CS%Time, IST%part_size(isc:iec,jsc:jec,0), OSS%SST_C(:,:), G)
