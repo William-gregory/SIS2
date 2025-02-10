@@ -31,6 +31,7 @@ use SIS_hor_grid,     only : SIS_hor_grid_type
 use fms_io_mod,       only : register_restart_field, restart_file_type
 use fms_io_mod,       only : restore_state, query_initialized
 use mpp_domains_mod,  only : domain2D
+use SIS_ML,           only : ML_CS
 
 implicit none ; private
 
@@ -106,6 +107,7 @@ type, public :: SIS_C_dyn_CS ; private
                               !! a column's worth of accelerations during a run.
 
   logical :: FirstCall = .true. !< If true, this module has not been called before
+  logical :: do_ML !WG
   !>@{ Diagnostic IDs
   integer :: id_fix = -1, id_fiy = -1, id_fcx = -1, id_fcy = -1
   integer :: id_fwx = -1, id_fwy = -1, id_sigi = -1, id_sigii = -1
@@ -260,6 +262,8 @@ subroutine SIS_C_dyn_init(Time, G, param_file, diag, CS, ntrunc)
   call get_param(param_file, mdl, "MAX_TRUNC_FILE_SIZE_PER_PE", CS%max_writes, &
                  "The maximum number of colums of truncations that any PE \n"//&
                  "will write out during a run.", default=50, debuggingParam=.true.)
+  call get_param(param_file, mdl, "DO_ML", CS%do_ML, &
+                 "Perform machine learning based bias correction.", default=.false.) !WG
 
 !  if (len_trim(dirs%output_directory) > 0) then
 !    if (len_trim(CS%u_trunc_file) > 0) &
@@ -433,7 +437,7 @@ end subroutine find_ice_strength
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
 !> SIS_C_dynamics takes a single dynamics timestep with EVP subcycles
 subroutine SIS_C_dynamics(ci, mis, mice, ui, vi, uo, vo, &
-                          fxat, fyat, sea_lev, fxoc, fyoc, dt_slow, G, CS)
+                          fxat, fyat, sea_lev, fxoc, fyoc, dt_slow, G, CS, ML) !WG
 
   type(SIS_hor_grid_type),           intent(inout) :: G   !< The horizontal grid type
   real, dimension(SZI_(G),SZJ_(G)),  intent(in   ) :: ci  !< Sea ice concentration [nondim]
@@ -454,6 +458,7 @@ subroutine SIS_C_dynamics(ci, mis, mice, ui, vi, uo, vo, &
   real,                              intent(in   ) :: dt_slow !< The amount of time over which the ice
                                                             !! dynamics are to be advanced [s].
   type(SIS_C_dyn_CS),                pointer       :: CS    !< The control structure for this module
+  type(ML_CS),                optional,intent(inout) :: ML  !< Control structure for ML model(s)
 
   ! Local variables
   real, dimension(SZI_(G),SZJ_(G)) :: &
@@ -579,6 +584,7 @@ subroutine SIS_C_dynamics(ci, mis, mice, ui, vi, uo, vo, &
   logical :: do_trunc_its  ! If true, overly large velocities in the iterations are truncated.
   integer :: halo_sh_Ds  ! The halo size that can be used in calculating sh_Ds.
   integer :: i, j, isc, iec, jsc, jec, n
+  real    :: nsteps_i !WG
   isc = G%isc ; iec = G%iec ; jsc = G%jsc ; jec = G%jec
 
   if (.not.associated(CS)) call SIS_error(FATAL, &
@@ -1304,6 +1310,17 @@ subroutine SIS_C_dynamics(ci, mis, mice, ui, vi, uo, vo, &
 
     if (CS%id_ui>0) call post_SIS_data(CS%id_ui, ui, CS%diag)
     if (CS%id_vi>0) call post_SIS_data(CS%id_vi, vi, CS%diag)
+
+    if (CS%do_ML) then !WG
+       nsteps_i = dt_slow/ML%ML_freq !number of dynamics timesteps in ML%ML_freq
+       do j=jsc,jec ; do i=isc,iec 
+          ML%UI_filtered(i,j) = ML%UI_filtered(i,j) + (ui(i,j)*nsteps_i)
+          ML%VI_filtered(i,j) = ML%VI_filtered(i,j) + (vi(i,j)*nsteps_i)
+       enddo; enddo
+       if (ML%id_uinet>0) call post_SIS_data(ML%id_uinet, ML%UI_filtered, ML%diag)
+       if (ML%id_vinet>0) call post_SIS_data(ML%id_vinet, ML%VI_filtered, ML%diag)
+    endif
+    
     if (CS%id_miu>0) call post_SIS_data(CS%id_miu, mi_u, CS%diag)
     if (CS%id_miv>0) call post_SIS_data(CS%id_miv, mi_v, CS%diag)
     if (CS%id_mis>0) call post_SIS_data(CS%id_mis, mice, CS%diag)
