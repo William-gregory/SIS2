@@ -339,7 +339,7 @@ subroutine SIS_dynamics_trans(IST, OSS, FIA, IOF, dt_slow, CS, icebergs_CS, G, I
   integer :: isd, ied, jsd, jed
   integer :: ndyn_steps, nds ! The number of dynamic steps.
   integer :: nadv_cycle, nac ! The number of tracer advective cycles in this call.
-  real    :: nsteps_i !WG
+  !real    :: nsteps_i !WG
 
   isc = G%isc ; iec = G%iec ; jsc = G%jsc ; jec = G%jec ; ncat = IG%CatIce
   isd = G%isd ; ied = G%ied ; jsd = G%jsd ; jed = G%jed
@@ -561,12 +561,12 @@ subroutine SIS_dynamics_trans(IST, OSS, FIA, IOF, dt_slow, CS, icebergs_CS, G, I
           enddo; enddo
 
           if (CS%do_ML) then !WG
-             nsteps_i = dt_slow_dyn/ML%ML_freq !number of dynamics timesteps in ML%ML_freq
+             !nsteps_i = dt_slow_dyn/ML%ML_freq !number of dynamics timesteps in ML%ML_freq
              do j=jsc,jec ; do I=isc,iec 
-                ML%UI_filtered(I,j) = ML%UI_filtered(I,j) + (IST%u_ice_C(I,j)*nsteps_i)
+                ML%UI_filtered(I,j) = ML%UI_filtered(I,j) + IST%u_ice_C(I,j)
              enddo; enddo
              do J=jsc,jec ; do i=isc,iec
-                ML%VI_filtered(i,J) = ML%VI_filtered(i,J) + (IST%v_ice_C(i,J)*nsteps_i)
+                ML%VI_filtered(i,J) = ML%VI_filtered(i,J) + IST%v_ice_C(i,J)
              enddo; enddo
              if (ML%id_uinet>0) call post_data(ML%id_uinet, ML%UI_filtered, ML%diag)
              if	(ML%id_vinet>0) call post_data(ML%id_vinet, ML%VI_filtered, ML%diag)
@@ -622,11 +622,10 @@ subroutine SIS_dynamics_trans(IST, OSS, FIA, IOF, dt_slow, CS, icebergs_CS, G, I
   !!! WG !!!
   if (CS%do_ML) then
        call enable_SIS_averaging(dt_slow, CS%Time, ML%diag)
-       call ML_inference(IST, FIA, OSS, G, IG, ML, dt_slow)
+       call ML_inference(IST, FIA, OSS, G, IG, ML, dt_slow, dt_slow_dyn)
        call disable_SIS_averaging(ML%diag)
   endif
   !!! WG end !!!
-
 
 end subroutine SIS_dynamics_trans
 

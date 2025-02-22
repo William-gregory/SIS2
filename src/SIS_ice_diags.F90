@@ -98,7 +98,8 @@ subroutine post_ice_state_diagnostics(IDs, IST, OSS, IOF, dt_slow, Time, G, IG, 
   logical :: spec_thermo_sal
   logical :: do_temp_diags
   integer :: i, j, k, l, m, isc, iec, jsc, jec, ncat, NkIce
-  real    :: cvr, sit, nsteps_i !WG
+  !real    :: nsteps_i !WG
+  real, dimension(SZI_(G),SZJ_(G)) :: sit !WG
 
   isc = G%isc ; iec = G%iec ; jsc = G%jsc ; jec = G%jec ; ncat = IG%CatIce
   NkIce = IG%NkIce
@@ -150,19 +151,15 @@ subroutine post_ice_state_diagnostics(IDs, IST, OSS, IOF, dt_slow, Time, G, IG, 
   I_enth_units = 1.0 / enth_units
 
   if (do_ML) then
-     nsteps_i = dt_slow/ML%ML_freq !WG
-     cvr = 0.0
+     !nsteps_i = dt_slow/ML%ML_freq !WG
+     sit(:,:) = 0.0
+     call get_avg(IST%mH_ice, IST%part_size(:,:,1:ncat), sit, wtd=.true., scale=IG%H_to_kg_m2/rho_ice)
      do j=jsc,jec ; do i=isc,iec
-        sit = 0.0
-        cvr = sum(IST%part_size(i,j,1:ncat))
-        ML%SIC_filtered(i,j) = ML%SIC_filtered(i,j) + (cvr*nsteps_i)
+        ML%SIC_filtered(i,j) = ML%SIC_filtered(i,j) + sum(IST%part_size(i,j,1:ncat))
+        ML%HI_filtered(i,j) = ML%HI_filtered(i,j) + sit(i,j)
         do k=1,ncat
-           sit = sit + (IST%part_size(i,j,k)*(IST%mH_ice(i,j,k)/rho_ice))
-           ML%CN_filtered(i,j,k) = ML%CN_filtered(i,j,k) + (IST%part_size(i,j,k)*nsteps_i)
+           ML%CN_filtered(i,j,k) = ML%CN_filtered(i,j,k) + IST%part_size(i,j,k)
         enddo
-        if (cvr > 0.) then
-           ML%HI_filtered(i,j) = ML%HI_filtered(i,j) + ((sit / cvr)*nsteps_i)
-        endif
      enddo; enddo
      if (ML%id_sicnet>0) call post_data(ML%id_sicnet, ML%SIC_filtered, ML%diag)
      if (ML%id_hinet>0) call post_data(ML%id_hinet, ML%HI_filtered, ML%diag)
@@ -246,8 +243,8 @@ subroutine post_ice_state_diagnostics(IDs, IST, OSS, IOF, dt_slow, Time, G, IG, 
 
   if (do_ML) then
      do j=jsc,jec ; do i=isc,iec !WG
-        ML%SST_filtered(i,j) = ML%SST_filtered(i,j) + (OSS%SST_C(i,j)*nsteps_i)
-        ML%SSS_filtered(i,j) = ML%SSS_filtered(i,j) + (OSS%s_surf(i,j)*nsteps_i)
+        ML%SST_filtered(i,j) = ML%SST_filtered(i,j) + OSS%SST_C(i,j)
+        ML%SSS_filtered(i,j) = ML%SSS_filtered(i,j) + OSS%s_surf(i,j)
      enddo; enddo
      if (ML%id_sstnet>0) call post_data(ML%id_sstnet, ML%SST_filtered, ML%diag)
      if (ML%id_sssnet>0) call post_data(ML%id_sssnet, ML%SSS_filtered, ML%diag)
