@@ -27,18 +27,21 @@ contains
 
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
 !> get_avg calculates an area weighted average over some or all thickness categories
-subroutine get_avg(x, cn, avg, wtd)
+subroutine get_avg(x, cn, avg, wtd, scale)
   real, dimension(:,:,:), intent(in)  :: x   !< The field to average
   real, dimension(:,:,:), intent(in)  :: cn  !< The concentration of each thickness category
   real, dimension(:,:),   intent(out) :: avg !< The area-weighted average of x
   logical,      optional, intent(in)  :: wtd !< Take a weighted average over the ice-covered area
                                              !! as opposed to averaging over the full cell areas
+  real,         optional, intent(in)  :: scale !< A multiplicative scaling factor for the diagnostic
 
   real, dimension(size(x,1),size(x,2)) :: wts
+  real    :: scl
   logical :: do_wt
   integer :: i, j, k, ni, nj, nk
 
   do_wt = .false. ; if (present(wtd)) do_wt = wtd
+  scl = 1.0 ; if (present(scale)) scl = scale
 
   ni = size(x,1) ; nj = size(x,2); nk = size(x,3)
   if ((size(cn,1) /= ni) .or. (size(cn,2) /= nj) .or. (size(cn,3) /= nk)) &
@@ -50,10 +53,10 @@ subroutine get_avg(x, cn, avg, wtd)
 
   if (do_wt) then
     avg(:,:) = 0.0 ; wts(:,:) = 0.0
-!$OMP parallel do default(none) shared(ni,nj,nk,avg,cn,x,wts)
+!$OMP parallel do default(none) shared(ni,nj,nk,avg,cn,x,wts,scl)
     do j=1,nj
       do k=1,nk ; do i=1,ni
-        avg(i,j) = avg(i,j) + cn(i,j,k)*x(i,j,k)
+        avg(i,j) = avg(i,j) + cn(i,j,k)*(scl*x(i,j,k))
         wts(i,j) = wts(i,j) + cn(i,j,k)
       enddo ; enddo
       do i=1,ni
@@ -66,10 +69,10 @@ subroutine get_avg(x, cn, avg, wtd)
     enddo
   else
     avg(:,:) = 0.0
-!$OMP parallel do default(none) shared(ni,nj,nk,avg,cn,x)
+!$OMP parallel do default(none) shared(ni,nj,nk,avg,cn,x,scl)
     do j=1,nj
       do k=1,nk ; do i=1,ni
-        avg(i,j) = avg(i,j) + cn(i,j,k)*x(i,j,k)
+        avg(i,j) = avg(i,j) + cn(i,j,k)*(scl*x(i,j,k))
       enddo ; enddo
     enddo
   endif

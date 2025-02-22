@@ -30,6 +30,7 @@ use SIS_types,     only : ice_state_type, IST_chksum, IST_bounds_check
 use SIS_utils,     only : get_avg, post_avg
 use SIS2_ice_thm,  only : get_SIS2_thermo_coefs, enthalpy_liquid_freeze, Temp_from_En_S
 use ice_grid,      only : ice_grid_type
+use SIS_ML,        only : ML_CS !WG
 
 implicit none ; private
 
@@ -61,7 +62,7 @@ contains
 
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
 !> Offer diagnostics of the slowly evolving sea ice state.
-subroutine post_ice_state_diagnostics(IDs, IST, OSS, IOF, dt_slow, Time, G, US, IG, diag)
+subroutine post_ice_state_diagnostics(IDs, IST, OSS, IOF, dt_slow, Time, G, US, IG, diag, ML, do_ML) !WG
   type(ice_state_diags_type), pointer       :: IDs !< The control structure for the SIS_dyn_trans module
   type(ice_state_type),       intent(inout) :: IST !< A type describing the state of the sea ice
   type(ocean_sfc_state_type), intent(in)    :: OSS !< A structure containing the arrays that describe
@@ -74,6 +75,8 @@ subroutine post_ice_state_diagnostics(IDs, IST, OSS, IOF, dt_slow, Time, G, US, 
   type(unit_scale_type),      intent(in)    :: US  !< A structure with unit conversion factors
   type(ice_grid_type),        intent(inout) :: IG  !< The sea-ice specific grid type
   type(SIS_diag_ctrl),        pointer       :: diag !< A structure that is used to regulate diagnostic output
+  type(ML_CS),       optional,intent(inout) :: ML   !< Control structure for the ML model(s) !WG
+  logical,           optional,intent(in)    :: do_ML !WG
 
   ! Local variables
   real, dimension(G%isc:G%iec,G%jsc:G%jec) :: mass, mass_ice, mass_snow ! Masses per unit area [R Z ~> kg m-2]
@@ -95,6 +98,7 @@ subroutine post_ice_state_diagnostics(IDs, IST, OSS, IOF, dt_slow, Time, G, US, 
   logical :: spec_thermo_sal
   logical :: do_temp_diags
   integer :: i, j, k, l, m, isc, iec, jsc, jec, ncat, NkIce
+  real, dimension(SZI_(G),SZJ_(G)) :: sit !WG
 
   isc = G%isc ; iec = G%iec ; jsc = G%jsc ; jec = G%jec ; ncat = IG%CatIce
   NkIce = IG%NkIce
@@ -149,6 +153,21 @@ subroutine post_ice_state_diagnostics(IDs, IST, OSS, IOF, dt_slow, Time, G, US, 
   !   Convert from ice and snow enthalpy back to temperature for diagnostic purposes.
   do_temp_diags = (IDs%id_tsn > 0)
   do m=1,NkIce ; if (IDs%id_t(m)>0) do_temp_diags = .true. ; enddo
+
+  if (do_ML) then !WG
+     sit(:,:) = 0.0
+     call get_avg(IST%mH_ice, IST%part_size(:,:,1:ncat), sit, wtd=.true., scale=US%Z_to_m/rho_ice)
+     do j=jsc,jec ; do i=isc,iec
+        ML%SIC_filtered(i,j) = ML%SIC_filtered(i,j) + sum(IST%part_size(i,j,1:ncat))
+        ML%HI_filtered(i,j) = ML%HI_filtered(i,j) + sit(i,j)
+        do k=1,ncat
+           ML%CN_filtered(i,j,k) = ML%CN_filtered(i,j,k) + IST%part_size(i,j,k)
+        enddo
+     enddo; enddo
+     if (ML%id_sicnet>0) call post_data(ML%id_sicnet, ML%SIC_filtered, ML%diag)
+     if (ML%id_hinet>0) call post_data(ML%id_hinet, ML%HI_filtered, ML%diag)
+     if (ML%id_cnnet>0) call post_data(ML%id_cnnet, ML%CN_filtered, ML%diag)
+  endif   
 
   if (do_temp_diags) then
     !$OMP parallel do default(shared)
@@ -223,6 +242,15 @@ subroutine post_ice_state_diagnostics(IDs, IST, OSS, IOF, dt_slow, Time, G, US, 
   ! Write out diagnostics of the ocean surface state, as seen by the slow sea ice.
   ! These fields do not change over the course of the sea-ice time stepping.
   call post_ocean_sfc_diagnostics(OSS, dt_slow, Time, G, diag)
+
+  if (do_ML) then
+     do j=jsc,jec ; do i=isc,iec !WG
+        ML%SST_filtered(i,j) = ML%SST_filtered(i,j) + OSS%SST_C(i,j)
+        ML%SSS_filtered(i,j) = ML%SSS_filtered(i,j) + OSS%s_surf(i,j)
+     enddo; enddo
+     if (ML%id_sstnet>0) call post_data(ML%id_sstnet, ML%SST_filtered, ML%diag)
+     if (ML%id_sssnet>0) call post_data(ML%id_sssnet, ML%SSS_filtered, ML%diag)
+  endif
 
   if (IDs%id_e2m>0) then
     tmp2d(:,:) = 0.0

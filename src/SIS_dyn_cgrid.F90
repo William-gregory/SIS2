@@ -38,6 +38,7 @@ use SIS_framework,     only : safe_alloc
 use SIS_hor_grid,      only : SIS_hor_grid_type
 use SIS_types,         only : ice_state_type
 use SIS2_ice_thm,      only : get_SIS2_thermo_coefs
+use SIS_ML,            only : ML_CS !WG
 
 implicit none ; private
 
@@ -133,6 +134,7 @@ type, public :: SIS_C_dyn_CS ; private
   real :: basal_stress_cutoff !< tunable parameter for the bottom drag [nondim]
   integer :: ncat_b           !< number of bathymetry categories
   integer :: ncat_i           !< number of ice thickness categories (log-normal)
+  logical :: do_ML !WG
 
   real, pointer, dimension(:,:) :: Tb_u=>NULL() !< Basal stress component at u-points
                                                 !! [R Z L T-2 -> kg m-1 s-2]
@@ -312,6 +314,8 @@ subroutine SIS_C_dyn_init(Time, G, US, param_file, diag, CS, ntrunc)
                  "will write out during a run.", default=50, debuggingParam=.true.)
   call get_param(param_file, mdl, "LEMIEUX_LANDFAST", CS%lemieux_landfast, &
                  "If true, turn on Lemieux landfast ice parameterization.", default=.false.)
+  call get_param(param_file, mdl, "DO_ML", CS%do_ML, &
+                 "Perform machine learning based bias correction.", default=.false.) !WG
   if (CS%lemieux_landfast) then
     call get_param(param_file, mdl, "LEMIEUX_K1", CS%lemieux_k1, &
                    "The value of the first Lemieux landfast ice tuneable parameter.", &
@@ -588,7 +592,7 @@ end subroutine find_ice_strength
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
 !> SIS_C_dynamics takes a single dynamics timestep with EVP subcycles
 subroutine SIS_C_dynamics(ci, mis, mice, ui, vi, uo, vo, fxat, fyat, &
-                          sea_lev, fxoc, fyoc, dt_slow, G, US, CS)
+                          sea_lev, fxoc, fyoc, dt_slow, G, US, CS, ML) !WG
 
   type(SIS_hor_grid_type),           intent(inout) :: G   !< The horizontal grid type
   real, dimension(SZI_(G),SZJ_(G)),  intent(in   ) :: ci  !< Sea ice concentration [nondim]
@@ -612,6 +616,7 @@ subroutine SIS_C_dynamics(ci, mis, mice, ui, vi, uo, vo, fxat, fyat, &
                                                             !! dynamics are to be advanced [T ~> s].
   type(unit_scale_type),             intent(in)    :: US    !< A structure with unit conversion factors
   type(SIS_C_dyn_CS),                pointer       :: CS    !< The control structure for this module
+  type(ML_CS),              optional,intent(inout) :: ML  !< Control structure for ML model(s) !WG
 
   ! Local variables
   real, dimension(SZI_(G),SZJ_(G)) :: &
@@ -1540,6 +1545,16 @@ subroutine SIS_C_dynamics(ci, mis, mice, ui, vi, uo, vo, fxat, fyat, &
 
     if (CS%id_ui>0) call post_SIS_data(CS%id_ui, ui, CS%diag)
     if (CS%id_vi>0) call post_SIS_data(CS%id_vi, vi, CS%diag)
+
+    if (CS%do_ML) then !WG
+       do j=jsc,jec ; do i=isc,iec 
+          ML%UI_filtered(i,j) = ML%UI_filtered(i,j) + ui(i,j)
+          ML%VI_filtered(i,j) = ML%VI_filtered(i,j) + vi(i,j)
+       enddo; enddo
+       if (ML%id_uinet>0) call post_SIS_data(ML%id_uinet, ML%UI_filtered, ML%diag)
+       if (ML%id_vinet>0) call post_SIS_data(ML%id_vinet, ML%VI_filtered, ML%diag)
+    endif
+    
     if (CS%id_miu>0) call post_SIS_data(CS%id_miu, mi_u, CS%diag)
     if (CS%id_miv>0) call post_SIS_data(CS%id_miv, mi_v, CS%diag)
     if (CS%id_mis>0) call post_SIS_data(CS%id_mis, mis, CS%diag)

@@ -102,12 +102,12 @@ type, public :: ML_CS
        HI_filtered, &   !< Time-filtered ice thickness [m]
        SW_filtered, &   !< Time-filtered net shortwave radiation [Wm-2]
        TS_filtered, &   !< Time-filtered ice-surface skin temperature [degC]
-       SSS_filtered, &  !< Time-filtered sea-surface salinity [psu]
-       land_mask        !< Land-sea mask [land cells = 0, ocean cells = 1]
+       SSS_filtered     !< Time-filtered sea-surface salinity [psu]
 
   type(SIS_diag_ctrl), pointer :: diag => NULL() !< A type that regulates diagnostics output
   !>@{ Diagnostic handles
-  integer :: id_dcn = -1
+  integer :: id_dcn = -1, id_sicnet = -1, id_sstnet = -1, id_uinet = -1, id_vinet = -1
+  integer :: id_hinet = -1, id_swnet = -1, id_tsnet = -1, id_sssnet = -1, id_cnnet = -1
   !>@}
     
 end type ML_CS
@@ -129,7 +129,25 @@ subroutine ML_init(Time, G, param_file, diag, CS)
 
   CS%diag => diag
   CS%id_dcn    = register_diag_field('ice_model', 'dCN', diag%axesTc, Time, &
-               'ML-based correction to ice concentration', 'area fraction', missing_value=missing)
+       'ML-based correction to ice concentration', 'area fraction', missing_value=missing)
+  CS%id_sicnet    = register_diag_field('ice_model', 'SICnet', diag%axesT1, Time, &
+       'Aggregate sea ice concentration CNN input', 'area fraction', missing_value=missing)
+  CS%id_sstnet    = register_diag_field('ice_model', 'SSTnet', diag%axesT1, Time, &
+       'Sea-surface temperature CNN input', 'deg C', missing_value=missing)
+  CS%id_uinet    = register_diag_field('ice_model', 'UInet', diag%axesT1, Time, &
+       'Zonal ice velocity CNN input', 'm s-1', missing_value=missing)
+  CS%id_vinet    = register_diag_field('ice_model', 'VInet', diag%axesT1, Time, &
+       'Meridional ice velocity CNN input', 'm s-1', missing_value=missing)
+  CS%id_hinet    = register_diag_field('ice_model', 'HInet', diag%axesT1, Time, &
+       'Sea ice thickness CNN input', 'm', missing_value=missing)
+  CS%id_swnet    = register_diag_field('ice_model', 'SWnet', diag%axesT1, Time, &
+       'Net shortwave radiation CNN input', 'W m-2', missing_value=missing)
+  CS%id_tsnet    = register_diag_field('ice_model', 'TSnet', diag%axesT1, Time, &
+       'Surface-skin temperature CNN input', 'deg C', missing_value=missing)
+  CS%id_sssnet    = register_diag_field('ice_model', 'SSSnet', diag%axesT1, Time, &
+       'Sea-surface salinity CNN input', 'g kg-1', missing_value=missing)
+  CS%id_cnnet    = register_diag_field('ice_model', 'CNnet', diag%axesTc, Time, &
+       'Category sea ice concentration CNN input', 'area fraction', missing_value=missing)
   
   call get_param(param_file, mdl, "CNN_HALO_SIZE", CS%CNN_halo_size, &
       "Halo size at each side of subdomains, depends on CNN architecture.", & 
@@ -178,8 +196,6 @@ subroutine ML_init(Time, G, param_file, diag, CS)
        allocate(CS%TS_filtered(CS%isdw:CS%iedw,CS%jsdw:CS%jedw), source=0.)
   if (.not. allocated(CS%SSS_filtered))	&
        allocate(CS%SSS_filtered(CS%isdw:CS%iedw,CS%jsdw:CS%jedw), source=0.)
-  if (.not. allocated(CS%land_mask))	&
-       allocate(CS%land_mask(CS%isdw:CS%iedw,CS%jsdw:CS%jedw), source=0.)
   if (.not. allocated(CS%CN_filtered))	&
        allocate(CS%CN_filtered(G%isc:G%iec,G%jsc:G%jec,5), source=0.)
   if (.not. allocated(CS%dCN_restart))	&
@@ -439,7 +455,7 @@ end subroutine postprocess
 !> between 0 and 1, and then makes commensurate adjustments to the sea ice profiles in the case of
 !> adding/removing sea ice (i.e add thickness and salinity for new ice). The code is currently non-
 !> conservative in terms of heat, mass, salt.
-subroutine ML_inference(IST, FIA, OSS, G, IG, ML, dt_slow)
+subroutine ML_inference(IST, FIA, OSS, G, IG, ML, dt_slow, dt_slow_dyn)
   type(ice_state_type),       intent(inout)  :: IST     !< A type describing the state of the sea ice
   type(fast_ice_avg_type),    intent(in)     :: FIA     !< A type containing averages of fields
                                                         ! (mostly fluxes) over the fast updates
@@ -449,6 +465,7 @@ subroutine ML_inference(IST, FIA, OSS, G, IG, ML, dt_slow)
   type(ice_grid_type),        intent(in)     :: IG      !< Sea ice specific grid
   type(ML_CS),                intent(inout)  :: ML      !< Control structure for the ML model
   real,                       intent(in)     :: dt_slow !< The thermodynamic time step [T ~> s]
+  real,                       intent(in)     :: dt_slow_dyn !< The dynamics time step [T ~> s]
 
   real, dimension(9,SZIW_(ML),SZJW_(ML)) &
                                    ::  IN_CNN    !< input variables to CNN (predict dSIC)
@@ -459,13 +476,13 @@ subroutine ML_inference(IST, FIA, OSS, G, IG, ML, dt_slow)
                                    :: dSIC       !< CNN predictions of aggregate SIC corrections
   real, dimension(SZI_(G),SZJ_(G),5) &
                                    :: dCN        !< ANN predictions of category SIC corrections
+  real, dimension(SZIW_(ML),SZJW_(ML)) &
+                                   :: land_mask  !< Land-sea mask [0=land cells, 1=ocean cells]
   
   integer :: i, j, k
   integer :: is, ie, js, je, ncat
   integer :: isdw, iedw, jsdw, jedw
-  real    :: cvr, sit
-  real    :: irho_ice, rho_ice
-  real    :: scale, nsteps, nsteps_i
+  real    :: scale, nsteps, nsteps_i, nsteps_dyn_i
   
   !normalization statistics for both networks
   real, parameter :: &
@@ -503,17 +520,16 @@ subroutine ML_inference(IST, FIA, OSS, G, IG, ML, dt_slow)
        cn4_std = 5.7322447935064, &
        cn5_std = 3.3207886915690743
 
-  call get_SIS2_thermo_coefs(IST%ITV, rho_ice=rho_ice)
-
-  irho_ice = 1/rho_ice
   scale = dt_slow/432000.0 !Network was trained on 5-day (432000-second) increments
   nsteps = ML%ML_freq/dt_slow !number of timesteps in ML%ML_freq
   nsteps_i = dt_slow/ML%ML_freq
+  nsteps_dyn_i = dt_slow_dyn/ML%ML_freq
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; ncat = IG%CatIce
   isdw = ML%isdw; iedw = ML%iedw; jsdw = ML%jsdw; jedw = ML%jedw
 
-  dCN = 0.0
+  dCN = 0.0 ; land_mask = 0.0
   do j=js,je ; do i=is,ie
+     land_mask(i,j) = G%mask2dT(i,j)
      do k=1,ncat
         dCN(i,j,k) = ML%dCN_restart(i,j,k)
      enddo
@@ -522,26 +538,6 @@ subroutine ML_inference(IST, FIA, OSS, G, IG, ML, dt_slow)
   if ( (.not. all(dCN==0.0)) .and. (ML%count /= nsteps) ) then
      call postprocess(IST, dCN, G, IG)
   endif
-
-  !Produce mean input variables over nsteps
-  cvr = 0.0
-  do j=js,je ; do i=is,ie
-     sit = 0.0
-     cvr = 1 - IST%part_size(i,j,0)
-     ML%SIC_filtered(i,j) = ML%SIC_filtered(i,j) + (cvr*nsteps_i)
-     ML%SST_filtered(i,j) = ML%SST_filtered(i,j) + (OSS%SST_C(i,j)*nsteps_i)
-     ML%SSS_filtered(i,j) = ML%SSS_filtered(i,j) + (OSS%s_surf(i,j)*nsteps_i)
-     ML%land_mask(i,j) = G%mask2dT(i,j)
-     do k=1,ncat
-        sit = sit + (IST%part_size(i,j,k)*(IST%mH_ice(i,j,k)*irho_ice))
-        ML%CN_filtered(i,j,k) = ML%CN_filtered(i,j,k) + (IST%part_size(i,j,k)*nsteps_i)
-     enddo
-     if (cvr > 0.) then
-        ML%HI_filtered(i,j) = ML%HI_filtered(i,j) + ((sit / cvr)*nsteps_i) 
-     else
-        ML%HI_filtered(i,j) = ML%HI_filtered(i,j) + 0.0
-     endif
-  enddo; enddo
 
   if ( ML%count == nsteps ) then !nsteps have passed, do inference
 
@@ -553,20 +549,20 @@ subroutine ML_inference(IST, FIA, OSS, G, IG, ML, dt_slow)
      call pass_var(ML%SW_filtered, ML%CNN_Domain)
      call pass_var(ML%TS_filtered, ML%CNN_Domain)
      call pass_var(ML%SSS_filtered, ML%CNN_Domain)        
-     call pass_var(ML%land_mask, ML%CNN_Domain)
+     call pass_var(land_mask, ML%CNN_Domain)
 
      IN_CNN = 0.0
      ! Combine arrays for the CNN and normalize
      do j=jsdw,jedw ; do i=isdw,iedw
-        IN_CNN(1,i,j) = ML%land_mask(i,j) * ((ML%SIC_filtered(i,j) - sic_mu)*sic_std)
-        IN_CNN(2,i,j) = ML%land_mask(i,j) * ((ML%SST_filtered(i,j) - sst_mu)*sst_std)
-        IN_CNN(3,i,j) = ML%land_mask(i,j) * ((ML%UI_filtered(i,j) - ui_mu)*ui_std)
-        IN_CNN(4,i,j) = ML%land_mask(i,j) * ((ML%VI_filtered(i,j) - vi_mu)*vi_std)
-        IN_CNN(5,i,j) = ML%land_mask(i,j) * ((ML%HI_filtered(i,j) - hi_mu)*hi_std)
-        IN_CNN(6,i,j) = ML%land_mask(i,j) * ((ML%SW_filtered(i,j) - sw_mu)*sw_std)
-        IN_CNN(7,i,j) = ML%land_mask(i,j) * ((ML%TS_filtered(i,j) - ts_mu)*ts_std)
-        IN_CNN(8,i,j) = ML%land_mask(i,j) * ((ML%SSS_filtered(i,j) - sss_mu)*sss_std)
-        IN_CNN(9,i,j) = ML%land_mask(i,j)
+        IN_CNN(1,i,j) = land_mask(i,j) * ((ML%SIC_filtered(i,j)*nsteps_i - sic_mu)*sic_std)
+        IN_CNN(2,i,j) = land_mask(i,j) * ((ML%SST_filtered(i,j)*nsteps_i - sst_mu)*sst_std)
+        IN_CNN(3,i,j) = land_mask(i,j) * ((ML%UI_filtered(i,j)*nsteps_dyn_i - ui_mu)*ui_std)
+        IN_CNN(4,i,j) = land_mask(i,j) * ((ML%VI_filtered(i,j)*nsteps_dyn_i - vi_mu)*vi_std)
+        IN_CNN(5,i,j) = land_mask(i,j) * ((ML%HI_filtered(i,j)*nsteps_i - hi_mu)*hi_std)
+        IN_CNN(6,i,j) = land_mask(i,j) * ((ML%SW_filtered(i,j)*nsteps_i - sw_mu)*sw_std)
+        IN_CNN(7,i,j) = land_mask(i,j) * ((ML%TS_filtered(i,j)*nsteps_i - ts_mu)*ts_std)
+        IN_CNN(8,i,j) = land_mask(i,j) * ((ML%SSS_filtered(i,j)*nsteps_i - sss_mu)*sss_std)
+        IN_CNN(9,i,j) = land_mask(i,j)
      enddo ; enddo
 
      dSIC = 0.0
@@ -575,11 +571,11 @@ subroutine ML_inference(IST, FIA, OSS, G, IG, ML, dt_slow)
      IN_ANN = 0.0
      do j=js,je ; do i=is,ie
         IN_ANN(1,i,j) = G%mask2dT(i,j) * ((dSIC(i,j) - dsic_mu)*dsic_std)
-        IN_ANN(2,i,j) = G%mask2dT(i,j) * ((ML%CN_filtered(i,j,1) - cn1_mu)*cn1_std)
-        IN_ANN(3,i,j) = G%mask2dT(i,j) * ((ML%CN_filtered(i,j,2) - cn2_mu)*cn2_std)
-        IN_ANN(4,i,j) = G%mask2dT(i,j) * ((ML%CN_filtered(i,j,3) - cn3_mu)*cn3_std)
-        IN_ANN(5,i,j) = G%mask2dT(i,j) * ((ML%CN_filtered(i,j,4) - cn4_mu)*cn4_std)
-        IN_ANN(6,i,j) = G%mask2dT(i,j) * ((ML%CN_filtered(i,j,5) - cn5_mu)*cn5_std)
+        IN_ANN(2,i,j) = G%mask2dT(i,j) * ((ML%CN_filtered(i,j,1)*nsteps_i - cn1_mu)*cn1_std)
+        IN_ANN(3,i,j) = G%mask2dT(i,j) * ((ML%CN_filtered(i,j,2)*nsteps_i - cn2_mu)*cn2_std)
+        IN_ANN(4,i,j) = G%mask2dT(i,j) * ((ML%CN_filtered(i,j,3)*nsteps_i - cn3_mu)*cn3_std)
+        IN_ANN(5,i,j) = G%mask2dT(i,j) * ((ML%CN_filtered(i,j,4)*nsteps_i - cn4_mu)*cn4_std)
+        IN_ANN(6,i,j) = G%mask2dT(i,j) * ((ML%CN_filtered(i,j,5)*nsteps_i - cn5_mu)*cn5_std)
         IN_ANN(7,i,j) = G%mask2dT(i,j)
      enddo; enddo
 

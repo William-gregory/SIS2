@@ -169,7 +169,6 @@ subroutine post_flux_diagnostics(IST, FIA, IOF, CS, G, US, IG, Idt_slow, ML) !WG
   real :: sw_cat ! [Q R Z T-1 ~> W m-2]
   real, parameter :: missing = -1e34  ! A missing data fill value
   integer :: i, j, k, m, n, b, nb, isc, iec, jsc, jec, ncat
-  real :: nsteps_i !WG
   
   isc = G%isc ; iec = G%iec ; jsc = G%jsc ; jec = G%jec ; ncat = IG%CatIce
   nb = size(FIA%flux_sw_top,4)
@@ -186,7 +185,7 @@ subroutine post_flux_diagnostics(IST, FIA, IOF, CS, G, US, IG, Idt_slow, ML) !WG
   if (FIA%id_evap>0) call post_avg(FIA%id_evap, FIA%evap_top, IST%part_size, CS%diag, G=G)
   if (FIA%id_slp>0) call post_data(FIA%id_slp, FIA%p_atm_surf, CS%diag)
 
-  if ((FIA%id_sw>0) .or. (FIA%id_albedo>0)) then
+  if ((FIA%id_sw>0) .or. (FIA%id_albedo>0) .or. (CS%do_ML)) then
     !$OMP parallel do default(shared) private(sw_cat)
     do j=jsc,jec
       do i=isc,iec ; net_sw(i,j) = 0.0 ; enddo
@@ -195,14 +194,13 @@ subroutine post_flux_diagnostics(IST, FIA, IOF, CS, G, US, IG, Idt_slow, ML) !WG
         net_sw(i,j) = net_sw(i,j) + IST%part_size(i,j,k) * sw_cat
       enddo; enddo
     enddo
+    if (FIA%id_sw>0) call post_data(FIA%id_sw, net_sw, CS%diag)
     if (CS%do_ML) then !WG
-       nsteps_i = (1/Idt_slow)/ML%ML_freq
        do j=jsc,jec ; do i=isc,iec
-          ML%SW_filtered(i,j) = ML%SW_filtered(i,j) + (net_sw(i,j)*nsteps_i)
-          ML%TS_filtered(i,j) = ML%TS_filtered(i,j) + (FIA%Tskin_avg(i,j)*nsteps_i)
+          ML%SW_filtered(i,j) = ML%SW_filtered(i,j) + net_sw(i,j)
+          ML%TS_filtered(i,j) = ML%TS_filtered(i,j) + FIA%Tskin_avg(i,j)
        enddo; enddo
     endif
-    if (FIA%id_sw>0) call post_data(FIA%id_sw, net_sw, CS%diag)
     if (FIA%id_albedo>0) then
       do j=jsc,jec ; do i=isc,iec
         sw_dn(i,j) = 0.0

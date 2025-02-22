@@ -381,7 +381,6 @@ subroutine SIS_dynamics_trans(IST, OSS, FIA, IOF, dt_slow, CS, icebergs_CS, G, U
   integer :: isd, ied, jsd, jed
   integer :: ndyn_steps, nds ! The number of dynamic steps.
   integer :: nadv_cycle, nac ! The number of tracer advective cycles in this call.
-  real    :: nsteps_i !WG
 
   isc = G%isc ; iec = G%iec ; jsc = G%jsc ; jec = G%jec ; ncat = IG%CatIce
   isd = G%isd ; ied = G%ied ; jsd = G%jsd ; jed = G%jed
@@ -494,21 +493,13 @@ subroutine SIS_dynamics_trans(IST, OSS, FIA, IOF, dt_slow, CS, icebergs_CS, G, U
           if (CS%Warsaw_sum_order) then
             call SIS_C_dynamics(1.0-ice_free(:,:), misp_sum, mi_sum, IST%u_ice_C, IST%v_ice_C, &
                                 OSS%u_ocn_C, OSS%v_ocn_C, WindStr_x_Cu, WindStr_y_Cv, OSS%sea_lev, &
-                                str_x_ice_ocn_Cu, str_y_ice_ocn_Cv, dt_slow_dyn, G, US, CS%SIS_C_dyn_CSp)
+                                str_x_ice_ocn_Cu, str_y_ice_ocn_Cv, dt_slow_dyn, G, US, CS%SIS_C_dyn_CSp, ML) !WG
           else
             call SIS_C_dynamics(ice_cover, misp_sum, mi_sum, IST%u_ice_C, IST%v_ice_C, &
                                 OSS%u_ocn_C, OSS%v_ocn_C, WindStr_x_Cu, WindStr_y_Cv, OSS%sea_lev, &
-                                str_x_ice_ocn_Cu, str_y_ice_ocn_Cv, dt_slow_dyn, G, US, CS%SIS_C_dyn_CSp)
+                                str_x_ice_ocn_Cu, str_y_ice_ocn_Cv, dt_slow_dyn, G, US, CS%SIS_C_dyn_CSp, ML) !WG
           endif
 
-          if (CS%do_ML) then !WG
-             nsteps_i = dt_slow_dyn/ML%ML_freq !number of dynamics timesteps in ML%ML_freq
-             do j=jsd,jed ; do i=isd,ied 
-                ML%UI_filtered(i,j) = ML%UI_filtered(i,j) + (IST%u_ice_C(i,j)*nsteps_i)
-                ML%VI_filtered(i,j) = ML%VI_filtered(i,j) + (IST%v_ice_C(i,j)*nsteps_i)
-             enddo; enddo
-          endif
-          
           call cpu_clock_end(iceClocka)
 
           if (CS%debug) call uvchksum("After ice_dynamics [uv]_ice_C", IST%u_ice_C, IST%v_ice_C, G, scale=US%L_T_to_m_s)
@@ -612,7 +603,18 @@ subroutine SIS_dynamics_trans(IST, OSS, FIA, IOF, dt_slow, CS, icebergs_CS, G, U
           enddo ; enddo
           do J=jsc-1,jec ; do i=isc,iec
             IST%v_ice_C(i,J) = 0.5 * ( IST%v_ice_B(I-1,J) + IST%v_ice_B(I,J) )
-          enddo ; enddo
+          enddo; enddo
+
+          if (CS%do_ML) then !WG
+             do j=jsc,jec ; do I=isc,iec 
+                ML%UI_filtered(I,j) = ML%UI_filtered(I,j) + IST%u_ice_C(I,j)
+             enddo; enddo
+             do J=jsc,jec ; do i=isc,iec
+                ML%VI_filtered(i,J) = ML%VI_filtered(i,J) + IST%v_ice_C(i,J)
+             enddo; enddo
+             if (ML%id_uinet>0) call post_data(ML%id_uinet, ML%UI_filtered, ML%diag)
+             if	(ML%id_vinet>0) call post_data(ML%id_vinet, ML%VI_filtered, ML%diag)
+          endif
         endif ! End of B-grid dynamics
 
         if (CS%do_ridging) then ! Accumulate the time-average ridging rate.
@@ -660,12 +662,12 @@ subroutine SIS_dynamics_trans(IST, OSS, FIA, IOF, dt_slow, CS, icebergs_CS, G, U
   call finish_ocean_top_stresses(IOF, G)
 
   ! Do diagnostics and update some information for the atmosphere.
-  call ice_state_cleanup(IST, OSS, IOF, dt_slow, G, US, IG, CS, tracer_CSp)
+  call ice_state_cleanup(IST, OSS, IOF, dt_slow, G, US, IG, CS, tracer_CSp, ML) !WG
 
   !!! WG !!!
   if (CS%do_ML) then
        call enable_SIS_averaging(US%T_to_s*dt_slow, CS%Time, ML%diag)
-       call ML_inference(IST, FIA, OSS, G, IG, ML, dt_slow)
+       call ML_inference(IST, FIA, OSS, G, IG, ML, dt_slow, dt_slow_dyn)
        call disable_SIS_averaging(ML%diag)
   endif
   !!! WG end !!!
@@ -811,7 +813,7 @@ end subroutine complete_IST_transport
 
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
 !> Do final checks to set a consistent ice state and write diagnostics as appropriate.
-subroutine ice_state_cleanup(IST, OSS, IOF, dt_slow, G, US, IG, CS, tracer_CSp)
+subroutine ice_state_cleanup(IST, OSS, IOF, dt_slow, G, US, IG, CS, tracer_CSp, ML) !WG
   type(ice_state_type),       intent(inout) :: IST !< A type describing the state of the sea ice
   type(ocean_sfc_state_type), intent(in)    :: OSS !< A structure containing the arrays that describe
                                                    !! the ocean's surface state for the ice model.
@@ -824,6 +826,7 @@ subroutine ice_state_cleanup(IST, OSS, IOF, dt_slow, G, US, IG, CS, tracer_CSp)
   type(dyn_trans_CS),         pointer       :: CS  !< The control structure for the SIS_dyn_trans module
   type(SIS_tracer_flow_control_CS), optional, pointer :: tracer_CSp !< The structure for controlling
                                                    !! calls to auxiliary ice tracer packages
+  type(ML_CS),       optional,intent(inout) :: ML  !< Control structure for ML model(s) !WG
 
   ! Local variables
   integer :: i, j, k, n, isc, iec, jsc, jec, ncat
@@ -841,7 +844,7 @@ subroutine ice_state_cleanup(IST, OSS, IOF, dt_slow, G, US, IG, CS, tracer_CSp)
   call cpu_clock_begin(iceClock9)
 
   call enable_SIS_averaging(US%T_to_s*dt_slow, CS%Time, CS%diag)
-  call post_ice_state_diagnostics(CS%IDs, IST, OSS, IOF, dt_slow, CS%Time, G, US, IG, CS%diag)
+  call post_ice_state_diagnostics(CS%IDs, IST, OSS, IOF, dt_slow, CS%Time, G, US, IG, CS%diag, ML, CS%do_ML) !WG
   call disable_SIS_averaging(CS%diag)
 
   if (CS%verbose) call ice_line(CS%Time, IST%part_size(:,:,0), OSS%SST_C(:,:), G)
