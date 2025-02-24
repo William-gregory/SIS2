@@ -174,7 +174,7 @@ subroutine post_flux_diagnostics(IST, FIA, IOF, CS, G, IG, Idt_slow, ML) !WG
   real, dimension(G%isd:G%ied,G%jsd:G%jed) :: tmp2d, net_sw, sw_dn
   real :: sw_cat
   integer :: i, j, k, m, n, b, nb, isc, iec, jsc, jec, ncat
-  !real :: nsteps_i !WG
+  real :: nsteps_i !WG
 
   isc = G%isc ; iec = G%iec ; jsc = G%jsc ; jec = G%jec ; ncat = IG%CatIce
   nb = size(FIA%flux_sw_top,4)
@@ -211,10 +211,10 @@ subroutine post_flux_diagnostics(IST, FIA, IOF, CS, G, IG, Idt_slow, ML) !WG
     enddo
     if (FIA%id_sw>0) call post_data(FIA%id_sw, net_sw, CS%diag)
     if (CS%do_ML) then !WG
-       !nsteps_i = (1/Idt_slow)/ML%ML_freq
+       nsteps_i = (1/Idt_slow)/ML%ML_freq
        do j=jsc,jec ; do i=isc,iec
-          ML%SW_filtered(i,j) = ML%SW_filtered(i,j) + net_sw(i,j)
-          ML%TS_filtered(i,j) = ML%TS_filtered(i,j) + FIA%Tskin_avg(i,j)
+          ML%SW_filtered(i,j) = ML%SW_filtered(i,j) + (net_sw(i,j)*nsteps_i)
+          ML%TS_filtered(i,j) = ML%TS_filtered(i,j) + (FIA%Tskin_avg(i,j)*nsteps_i)
        enddo; enddo
        if (ML%id_swnet>0) call post_data(ML%id_swnet, ML%SW_filtered, ML%diag)
        if (ML%id_tsnet>0) call post_data(ML%id_tsnet, ML%TS_filtered, ML%diag)

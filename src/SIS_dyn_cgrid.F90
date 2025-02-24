@@ -458,7 +458,7 @@ subroutine SIS_C_dynamics(ci, mis, mice, ui, vi, uo, vo, &
   real,                              intent(in   ) :: dt_slow !< The amount of time over which the ice
                                                             !! dynamics are to be advanced [s].
   type(SIS_C_dyn_CS),                pointer       :: CS    !< The control structure for this module
-  type(ML_CS),                optional,intent(inout) :: ML  !< Control structure for ML model(s)
+  type(ML_CS),                optional,intent(inout) :: ML  !< Control structure for ML model(s) !WG
 
   ! Local variables
   real, dimension(SZI_(G),SZJ_(G)) :: &
@@ -584,7 +584,7 @@ subroutine SIS_C_dynamics(ci, mis, mice, ui, vi, uo, vo, &
   logical :: do_trunc_its  ! If true, overly large velocities in the iterations are truncated.
   integer :: halo_sh_Ds  ! The halo size that can be used in calculating sh_Ds.
   integer :: i, j, isc, iec, jsc, jec, n
-  !real    :: nsteps_i !WG
+  real    :: nsteps_i !WG
   isc = G%isc ; iec = G%iec ; jsc = G%jsc ; jec = G%jec
 
   if (.not.associated(CS)) call SIS_error(FATAL, &
@@ -1312,10 +1312,10 @@ subroutine SIS_C_dynamics(ci, mis, mice, ui, vi, uo, vo, &
     if (CS%id_vi>0) call post_SIS_data(CS%id_vi, vi, CS%diag)
 
     if (CS%do_ML) then !WG
-       !nsteps_i = dt_slow/ML%ML_freq !number of dynamics timesteps in ML%ML_freq
+       nsteps_i = dt_slow/ML%ML_freq !number of dynamics timesteps in ML%ML_freq
        do j=jsc,jec ; do i=isc,iec 
-          ML%UI_filtered(i,j) = ML%UI_filtered(i,j) + ui(i,j)
-          ML%VI_filtered(i,j) = ML%VI_filtered(i,j) + vi(i,j)
+          ML%UI_filtered(i,j) = ML%UI_filtered(i,j) + (ui(i,j)*nsteps_i)
+          ML%VI_filtered(i,j) = ML%VI_filtered(i,j) + (vi(i,j)*nsteps_i)
        enddo; enddo
        if (ML%id_uinet>0) call post_SIS_data(ML%id_uinet, ML%UI_filtered, ML%diag)
        if (ML%id_vinet>0) call post_SIS_data(ML%id_vinet, ML%VI_filtered, ML%diag)
