@@ -665,14 +665,6 @@ subroutine SIS_dynamics_trans(IST, OSS, FIA, IOF, dt_slow, CS, icebergs_CS, G, U
 
   ! Do diagnostics and update some information for the atmosphere.
   call ice_state_cleanup(IST, OSS, IOF, dt_slow, G, US, IG, CS, tracer_CSp, ML) !WG
-
-  !!! WG !!!
-  !if (CS%do_ML) then
-  !   call enable_SIS_averaging(US%T_to_s*dt_slow, CS%Time, ML%diag)
-  !   call ML_inference(IST, FIA, OSS, G, IG, ML, dt_slow)
-  !   call disable_SIS_averaging(ML%diag)
-  !endif
-  !!! WG end !!!
   
 end subroutine SIS_dynamics_trans
 

@@ -161,7 +161,7 @@ subroutine post_flux_diagnostics(IST, FIA, IOF, CS, G, US, IG, Idt_slow, ML) !WG
   type(SIS_hor_grid_type),   intent(in) :: G   !< The horizontal grid type
   type(unit_scale_type),     intent(in) :: US  !< A structure with unit conversion factors
   type(ice_grid_type),       intent(in) :: IG  !< The sea-ice specific grid type
-  real,                      intent(in) :: Idt_slow !< The inverse of the slow thermodynamic !WG
+  real,                      intent(in) :: Idt_slow !< The inverse of the slow thermodynamic
                                                !! time step [T-1 ~> s-1]
   type(ML_CS),   optional,intent(inout) :: ML  !< Control structure for the ML model(s) !WG
 
@@ -186,7 +186,7 @@ subroutine post_flux_diagnostics(IST, FIA, IOF, CS, G, US, IG, Idt_slow, ML) !WG
   if (FIA%id_evap>0) call post_avg(FIA%id_evap, FIA%evap_top, IST%part_size, CS%diag, G=G)
   if (FIA%id_slp>0) call post_data(FIA%id_slp, FIA%p_atm_surf, CS%diag)
 
-  if ((FIA%id_sw>0) .or. (FIA%id_albedo>0) .or. (CS%do_ML)) then
+  if ((FIA%id_sw>0) .or. (FIA%id_albedo>0) .or. (CS%do_ML)) then !WG
     !$OMP parallel do default(shared) private(sw_cat)
     do j=jsc,jec
       do i=isc,iec ; net_sw(i,j) = 0.0 ; enddo

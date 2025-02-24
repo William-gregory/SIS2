@@ -114,37 +114,11 @@ use SIS2_ice_thm,      only : ice_temp_SIS2, SIS2_ice_thm_init, SIS2_ice_thm_end
 use SIS2_ice_thm,      only : ice_thermo_init, ice_thermo_end, T_freeze, ice_thermo_type
 use specified_ice,     only : specified_ice_dynamics, specified_ice_init, specified_ice_CS
 use specified_ice,     only : specified_ice_end, specified_ice_sum_output_CS
-use SIS_ML,            only : ML_init,register_ML_restarts,postprocess,CNN_forward,ANN_forward !WG
+use SIS_ML,            only : ML_init,register_ML_restarts,ML_inference !WG
 
 implicit none ; private
 
 #include <SIS2_memory.h>
-!> Configure the SIS2 memory for halos required to pad the CNN !WG
-#ifdef STATIC_MEMORY_
-#  ifndef BTHALO_
-#    define BTHALO_ 0
-#  endif
-#  define WHALOI_ MAX(BTHALO_-NIHALO_,0)
-#  define WHALOJ_ MAX(BTHALO_-NJHALO_,0)
-#  define NIMEMW_   1-WHALOI_:NIMEM_+WHALOI_
-#  define NJMEMW_   1-WHALOJ_:NJMEM_+WHALOJ_
-#  define NIMEMBW_  -WHALOI_:NIMEM_+WHALOI_
-#  define NJMEMBW_  -WHALOJ_:NJMEM_+WHALOJ_
-#  define SZIW_(G)  NIMEMW_
-#  define SZJW_(G)  NJMEMW_
-#  define SZIBW_(G) NIMEMBW_
-#  define SZJBW_(G) NJMEMBW_
-#else
-#  define NIMEMW_   :
-#  define NJMEMW_   :
-#  define NIMEMBW_  :
-#  define NJMEMBW_  :
-#  define SZIW_(G)  G%isdw:G%iedw
-#  define SZJW_(G)  G%jsdw:G%jedw
-#  define SZIBW_(G) G%isdw-1:G%iedw
-#  define SZJBW_(G) G%jsdw-1:G%jedw
-#endif
-!!! WG END !!!
 
 public :: ice_data_type, ocean_ice_boundary_type, atmos_ice_boundary_type, land_ice_boundary_type
 public :: ice_model_init, share_ice_domains, ice_model_end, ice_stock_pe
@@ -158,7 +132,6 @@ public :: unpack_ocean_ice_boundary_calved_shelf_bergs
 public :: ice_model_fast_cleanup, unpack_land_ice_boundary
 public :: exchange_fast_to_slow_ice, update_ice_model_slow
 public :: update_ice_slow_thermo, update_ice_dynamics_trans
-public :: ML_inference !WG
 
 !>@{ CPU time clock IDs
 integer :: iceClock
@@ -370,6 +343,12 @@ subroutine update_ice_dynamics_trans(Ice, time_step, start_cycle, end_cycle, cyc
 !  if (Ice%sCS%bounds_check) then
 !    call Ice_public_type_bounds_check(Ice, sG, "End update_ice_slow")
   !  endif
+
+  if (Ice%sCS%do_ML) then !WG
+     call enable_SIS_averaging(US%T_to_s*dt_slow, Ice%sCS%Time, Ice%sCS%ML_CSp%diag)
+     call ML_inference(sIST, sG, sIG, Ice%sCS%ML_CSp, dt_slow)
+     call disable_SIS_averaging(Ice%sCS%ML_CSp%diag)
+  endif
 
   call cpu_clock_end(ice_clock_slow) ; call cpu_clock_end(iceClock)
 
@@ -2757,160 +2736,6 @@ subroutine update_ice_atm_deposition_flux( Atmos_boundary, Ice )
   call accumulate_deposition_fluxes(Atmos_boundary, Ice%fCS%FIA, Ice%fCS%G, Ice%fCS%IG)
 
 end subroutine update_ice_atm_deposition_flux
-
-!~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
-!> This routine does all of the data prep for both the CNN and ANN, including padding the data
-!> for the CNN, and normalizing all inputs. The predicted increments are the added to the prior
-!> sea ice concentration states and a post-processing step then bounds this new (posterior) state
-!> between 0 and 1, and then makes commensurate adjustments to the sea ice profiles in the case of
-!> adding/removing sea ice (i.e add thickness and salinity for new ice). The code is currently non-
-!> conservative in terms of heat, mass, salt.
-subroutine ML_inference(Ice) !WG
-  type(ice_data_type),         intent(inout)  :: Ice
-
-  real, dimension(9,SZIW_(Ice%sCS%ML_CSp),SZJW_(Ice%sCS%ML_CSp)) &
-                                   ::  IN_CNN    !< input variables to CNN (predict dSIC)
-  real, dimension(7,SZI_(Ice%sCS%G),SZJ_(Ice%sCS%G)) &
-                                   ::  IN_ANN    !< input variables to ANN (predict dCN)
-
-  real, dimension(SZI_(Ice%sCS%G),SZJ_(Ice%sCS%G)) &
-                                   :: dSIC       !< CNN predictions of aggregate SIC corrections
-  real, dimension(SZI_(Ice%sCS%G),SZJ_(Ice%sCS%G),5) &
-                                   :: dCN        !< ANN predictions of category SIC corrections
-  real, dimension(SZIW_(Ice%sCS%ML_CSp),SZJW_(Ice%sCS%ML_CSp)) &
-                                   :: land_mask  !< Land-sea mask [0=land cells, 1=ocean cells]
-  
-  integer  :: i, j, k
-  integer  :: is, ie, js, je, ncat
-  integer  :: isdw, iedw, jsdw, jedw
-  real     :: scale, nsteps, dt_slow
-  
-  !normalization statistics for both networks
-  real, parameter :: &
-       !CNN stats
-       sic_mu = 0.351881980286515, &
-       sst_mu = 2.7164749450877377, &
-       ui_mu = 0.05207938176727914, &
-       vi_mu = 0.013623371444231282, &
-       hi_mu = 0.464892724876259, &
-       sw_mu = 72.10959544817908, &
-       ts_mu = -5.965751715716763, &
-       sss_mu = 33.21439687620783, &
-
-       sic_std = 2.2776011599449832, &
-       sst_std = 0.18654039670345826, &
-       ui_std = 7.548052444202416, &
-       vi_std = 10.565870985674433, &
-       hi_std = 1.4135317180558278, &
-       sw_std = 0.014621315593917536, &
-       ts_std = 0.10882083297442714, &
-       sss_std = 0.39935800256758885, &
-
-       !ANN stats
-       dsic_mu = -0.0030454079046698256, &
-       cn1_mu = 0.013804894078500482, &
-       cn2_mu = 0.04002918473327171, &
-       cn3_mu = 0.0884308970162244, &
-       cn4_mu = 0.06447318561424825, &
-       cn5_mu = 0.14514381883082697, &
-       
-       dsic_std = 28.891134850797304, &
-       cn1_std = 18.515013733684597, &
-       cn2_std = 8.436969737094152, &
-       cn3_std = 4.871373860744967, &
-       cn4_std = 5.7322447935064, &
-       cn5_std = 3.3207886915690743
-
-  dt_slow = Ice%sCS%US%s_to_T*time_type_to_real(Ice%sCS%Time_step_slow)
-  scale = dt_slow/432000.0 !Network was trained on 5-day (432000-second) increments
-  nsteps = Ice%sCS%ML_CSp%ML_freq/dt_slow !number of timesteps in ML%ML_freq
-  is = Ice%sCS%G%isc ; ie = Ice%sCS%G%iec ; js = Ice%sCS%G%jsc ; je = Ice%sCS%G%jec ; ncat = Ice%sCS%IG%CatIce
-  isdw = Ice%sCS%ML_CSp%isdw; iedw = Ice%sCS%ML_CSp%iedw; jsdw = Ice%sCS%ML_CSp%jsdw; jedw = Ice%sCS%ML_CSp%jedw
-
-  dCN = 0.0 ; land_mask = 0.0
-  do j=js,je ; do i=is,ie
-     land_mask(i,j) = Ice%sCS%G%mask2dT(i,j)
-     do k=1,ncat
-        dCN(i,j,k) = Ice%sCS%ML_CSp%dCN_restart(i,j,k)
-     enddo
-  enddo; enddo
-  
-  if ( (.not. all(dCN==0.0)) .and. (Ice%sCS%ML_CSp%count /= nsteps) ) then
-     call postprocess(Ice%sCS%IST, dCN, Ice%sCS%G, Ice%sCS%IG)
-  endif
-
-  if ( Ice%sCS%ML_CSp%count == nsteps ) then !nsteps have passed, do inference
-
-     ! Update the wide halos
-     call pass_var(Ice%sCS%ML_CSp%SIC_filtered, Ice%sCS%ML_CSp%CNN_Domain)
-     call pass_var(Ice%sCS%ML_CSp%SST_filtered, Ice%sCS%ML_CSp%CNN_Domain)
-     call pass_vector(Ice%sCS%ML_CSp%UI_filtered, Ice%sCS%ML_CSp%VI_filtered, Ice%sCS%ML_CSp%CNN_Domain, stagger=CGRID_NE)
-     call pass_var(Ice%sCS%ML_CSp%HI_filtered, Ice%sCS%ML_CSp%CNN_Domain)
-     call pass_var(Ice%sCS%ML_CSp%SW_filtered, Ice%sCS%ML_CSp%CNN_Domain)
-     call pass_var(Ice%sCS%ML_CSp%TS_filtered, Ice%sCS%ML_CSp%CNN_Domain)
-     call pass_var(Ice%sCS%ML_CSp%SSS_filtered, Ice%sCS%ML_CSp%CNN_Domain)        
-     call pass_var(land_mask, Ice%sCS%ML_CSp%CNN_Domain)
-
-     IN_CNN = 0.0
-     ! Combine arrays for the CNN and normalize
-     do j=jsdw,jedw ; do i=isdw,iedw
-        IN_CNN(1,i,j) = land_mask(i,j) * ((Ice%sCS%ML_CSp%SIC_filtered(i,j) - sic_mu)*sic_std)
-        IN_CNN(2,i,j) = land_mask(i,j) * ((Ice%sCS%ML_CSp%SST_filtered(i,j) - sst_mu)*sst_std)
-        IN_CNN(3,i,j) = land_mask(i,j) * ((Ice%sCS%ML_CSp%UI_filtered(i,j) - ui_mu)*ui_std)
-        IN_CNN(4,i,j) = land_mask(i,j) * ((Ice%sCS%ML_CSp%VI_filtered(i,j) - vi_mu)*vi_std)
-        IN_CNN(5,i,j) = land_mask(i,j) * ((Ice%sCS%ML_CSp%HI_filtered(i,j) - hi_mu)*hi_std)
-        IN_CNN(6,i,j) = land_mask(i,j) * ((Ice%sCS%ML_CSp%SW_filtered(i,j) - sw_mu)*sw_std)
-        IN_CNN(7,i,j) = land_mask(i,j) * ((Ice%sCS%ML_CSp%TS_filtered(i,j) - ts_mu)*ts_std)
-        IN_CNN(8,i,j) = land_mask(i,j) * ((Ice%sCS%ML_CSp%SSS_filtered(i,j) - sss_mu)*sss_std)
-        IN_CNN(9,i,j) = land_mask(i,j)
-     enddo ; enddo
-
-     dSIC = 0.0
-     call CNN_forward(IN_CNN, dSIC, Ice%sCS%ML_CSp%CNN_weight_vec1, Ice%sCS%ML_CSp%CNN_weight_vec2, Ice%sCS%ML_CSp%CNN_weight_vec3, Ice%sCS%ML_CSp%CNN_weight_vec4, Ice%sCS%G)
-
-     IN_ANN = 0.0
-     do j=js,je ; do i=is,ie
-        IN_ANN(1,i,j) = Ice%sCS%G%mask2dT(i,j) * ((dSIC(i,j) - dsic_mu)*dsic_std)
-        IN_ANN(2,i,j) = Ice%sCS%G%mask2dT(i,j) * ((Ice%sCS%ML_CSp%CN_filtered(i,j,1) - cn1_mu)*cn1_std)
-        IN_ANN(3,i,j) = Ice%sCS%G%mask2dT(i,j) * ((Ice%sCS%ML_CSp%CN_filtered(i,j,2) - cn2_mu)*cn2_std)
-        IN_ANN(4,i,j) = Ice%sCS%G%mask2dT(i,j) * ((Ice%sCS%ML_CSp%CN_filtered(i,j,3) - cn3_mu)*cn3_std)
-        IN_ANN(5,i,j) = Ice%sCS%G%mask2dT(i,j) * ((Ice%sCS%ML_CSp%CN_filtered(i,j,4) - cn4_mu)*cn4_std)
-        IN_ANN(6,i,j) = Ice%sCS%G%mask2dT(i,j) * ((Ice%sCS%ML_CSp%CN_filtered(i,j,5) - cn5_mu)*cn5_std)
-        IN_ANN(7,i,j) = Ice%sCS%G%mask2dT(i,j)
-     enddo; enddo
-
-     dCN = 0.0
-     call ANN_forward(IN_ANN, dCN, Ice%sCS%ML_CSp%ANN_weight_vec1, Ice%sCS%ML_CSp%ANN_weight_vec2, Ice%sCS%ML_CSp%ANN_weight_vec3, Ice%sCS%ML_CSp%ANN_weight_vec4, Ice%sCS%G)
-
-     Ice%sCS%ML_CSp%dCN_restart(:,:,:) = 0.0
-     do j=js,je ; do i=is,ie
-        do k=1,ncat
-           dCN(i,j,k) = Ice%sCS%G%mask2dT(i,j) * (dCN(i,j,k)*scale)
-           Ice%sCS%ML_CSp%dCN_restart(i,j,k) = dCN(i,j,k)
-        enddo
-     enddo; enddo
-
-     call postprocess(Ice%sCS%IST, dCN, Ice%sCS%G, Ice%sCS%IG)
-     
-     Ice%sCS%ML_CSp%SIC_filtered(:,:) = 0.0
-     Ice%sCS%ML_CSp%SST_filtered(:,:) = 0.0
-     Ice%sCS%ML_CSp%UI_filtered(:,:) = 0.0
-     Ice%sCS%ML_CSp%VI_filtered(:,:) = 0.0
-     Ice%sCS%ML_CSp%HI_filtered(:,:) = 0.0
-     Ice%sCS%ML_CSp%SW_filtered(:,:) = 0.0
-     Ice%sCS%ML_CSp%TS_filtered(:,:) = 0.0
-     Ice%sCS%ML_CSp%SSS_filtered(:,:) = 0.0
-     Ice%sCS%ML_CSp%CN_filtered(:,:,:) = 0.0
-     Ice%sCS%ML_CSp%count = 0.
-  endif
-
-  call enable_SIS_averaging(Ice%sCS%US%T_to_s*dt_slow, Ice%sCS%Time, Ice%sCS%ML_CSp%diag)
-  if (Ice%sCS%ML_CSp%id_dcn>0) call post_data(Ice%sCS%ML_CSp%id_dcn, dCN, Ice%sCS%ML_CSp%diag)
-  call disable_SIS_averaging(Ice%sCS%ML_CSp%diag)
-  
-  Ice%sCS%ML_CSp%count = Ice%sCS%ML_CSp%count + 1.
-
-end subroutine ML_inference
 
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
 !> ice_model_end writes the restart file and deallocates memory
