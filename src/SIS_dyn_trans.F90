@@ -65,7 +65,7 @@ use SIS2_ice_thm,      only : get_SIS2_thermo_coefs
 use slab_ice,          only : slab_ice_advect, slab_ice_dynamics
 use ice_bergs,         only : icebergs, icebergs_run, icebergs_init, icebergs_end
 use ice_grid,          only : ice_grid_type
-use SIS_ML,            only : ML_CS, ML_inference !WG
+use SIS_ML,            only : ML_CS !WG
 
 implicit none ; private
 
@@ -381,6 +381,7 @@ subroutine SIS_dynamics_trans(IST, OSS, FIA, IOF, dt_slow, CS, icebergs_CS, G, U
   integer :: isd, ied, jsd, jed
   integer :: ndyn_steps, nds ! The number of dynamic steps.
   integer :: nadv_cycle, nac ! The number of tracer advective cycles in this call.
+  real    :: nsteps_i !WG
 
   isc = G%isc ; iec = G%iec ; jsc = G%jsc ; jec = G%jec ; ncat = IG%CatIce
   isd = G%isd ; ied = G%ied ; jsd = G%jsd ; jed = G%jed
@@ -606,11 +607,12 @@ subroutine SIS_dynamics_trans(IST, OSS, FIA, IOF, dt_slow, CS, icebergs_CS, G, U
           enddo; enddo
 
           if (CS%do_ML) then !WG
+             nsteps_i = dt_slow_dyn/ML%ML_freq
              do j=jsc,jec ; do I=isc,iec 
-                ML%UI_filtered(I,j) = ML%UI_filtered(I,j) + IST%u_ice_C(I,j)
+                ML%UI_filtered(I,j) = ML%UI_filtered(I,j) + (IST%u_ice_C(I,j)*nsteps_i)
              enddo; enddo
              do J=jsc,jec ; do i=isc,iec
-                ML%VI_filtered(i,J) = ML%VI_filtered(i,J) + IST%v_ice_C(i,J)
+                ML%VI_filtered(i,J) = ML%VI_filtered(i,J) + (IST%v_ice_C(i,J)*nsteps_i)
              enddo; enddo
              if (ML%id_uinet>0) call post_data(ML%id_uinet, ML%UI_filtered, ML%diag)
              if	(ML%id_vinet>0) call post_data(ML%id_vinet, ML%VI_filtered, ML%diag)
@@ -665,11 +667,11 @@ subroutine SIS_dynamics_trans(IST, OSS, FIA, IOF, dt_slow, CS, icebergs_CS, G, U
   call ice_state_cleanup(IST, OSS, IOF, dt_slow, G, US, IG, CS, tracer_CSp, ML) !WG
 
   !!! WG !!!
-  if (CS%do_ML) then
-       call enable_SIS_averaging(US%T_to_s*dt_slow, CS%Time, ML%diag)
-       call ML_inference(IST, FIA, OSS, G, IG, ML, dt_slow, dt_slow_dyn)
-       call disable_SIS_averaging(ML%diag)
-  endif
+  !if (CS%do_ML) then
+  !   call enable_SIS_averaging(US%T_to_s*dt_slow, CS%Time, ML%diag)
+  !   call ML_inference(IST, FIA, OSS, G, IG, ML, dt_slow)
+  !   call disable_SIS_averaging(ML%diag)
+  !endif
   !!! WG end !!!
   
 end subroutine SIS_dynamics_trans

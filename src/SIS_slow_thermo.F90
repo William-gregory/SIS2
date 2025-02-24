@@ -161,7 +161,7 @@ subroutine post_flux_diagnostics(IST, FIA, IOF, CS, G, US, IG, Idt_slow, ML) !WG
   type(SIS_hor_grid_type),   intent(in) :: G   !< The horizontal grid type
   type(unit_scale_type),     intent(in) :: US  !< A structure with unit conversion factors
   type(ice_grid_type),       intent(in) :: IG  !< The sea-ice specific grid type
-  real,                      intent(in) :: Idt_slow !< The inverse of the slow thermodynamic
+  real,                      intent(in) :: Idt_slow !< The inverse of the slow thermodynamic !WG
                                                !! time step [T-1 ~> s-1]
   type(ML_CS),   optional,intent(inout) :: ML  !< Control structure for the ML model(s) !WG
 
@@ -169,6 +169,7 @@ subroutine post_flux_diagnostics(IST, FIA, IOF, CS, G, US, IG, Idt_slow, ML) !WG
   real :: sw_cat ! [Q R Z T-1 ~> W m-2]
   real, parameter :: missing = -1e34  ! A missing data fill value
   integer :: i, j, k, m, n, b, nb, isc, iec, jsc, jec, ncat
+  real    :: nsteps_i !WG
   
   isc = G%isc ; iec = G%iec ; jsc = G%jsc ; jec = G%jec ; ncat = IG%CatIce
   nb = size(FIA%flux_sw_top,4)
@@ -196,9 +197,10 @@ subroutine post_flux_diagnostics(IST, FIA, IOF, CS, G, US, IG, Idt_slow, ML) !WG
     enddo
     if (FIA%id_sw>0) call post_data(FIA%id_sw, net_sw, CS%diag)
     if (CS%do_ML) then !WG
+       nsteps_i = (1/Idt_slow)/ML%ML_freq
        do j=jsc,jec ; do i=isc,iec
-          ML%SW_filtered(i,j) = ML%SW_filtered(i,j) + net_sw(i,j)
-          ML%TS_filtered(i,j) = ML%TS_filtered(i,j) + FIA%Tskin_avg(i,j)
+          ML%SW_filtered(i,j) = ML%SW_filtered(i,j) + (net_sw(i,j)*nsteps_i)
+          ML%TS_filtered(i,j) = ML%TS_filtered(i,j) + (FIA%Tskin_avg(i,j)*nsteps_i)
        enddo; enddo
     endif
     if (FIA%id_albedo>0) then

@@ -115,6 +115,7 @@ type SIS_slow_CS
   logical :: bounds_check   !< If true, check for sensible values of thicknesses
                             !! temperatures, fluxes, etc.
   logical :: debug          !< If true, write verbose checksums for debugging purposes.
+  logical :: do_ML          !< If true, do machine learning bias correction !WG
 
 !  type(SIS_tracer_registry_type), pointer :: TrReg => NULL()
 
