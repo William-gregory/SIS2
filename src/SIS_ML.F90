@@ -65,7 +65,7 @@ implicit none; private
 #  define SZJBW_(G) G%jsdw-1:G%jedw
 #endif
 
-public :: ML_init,register_ML_restarts,postprocess,CNN_forward,ANN_forward
+public :: ML_init,register_ML_restarts,ML_inference
 
 !> Control structure for ML model
 type, public :: ML_CS
@@ -496,6 +496,160 @@ subroutine postprocess(IST, increments, G, IG)
   enddo; enddo
 
 end subroutine postprocess
+
+!> This routine does all of the data prep for both the CNN and ANN, including padding the data
+!> for the CNN, and normalizing all inputs. The predicted increments are the added to the prior
+!> sea ice concentration states and a post-processing step then bounds this new (posterior) state
+!> between 0 and 1, and then makes commensurate adjustments to the sea ice profiles in the case of
+!> adding/removing sea ice (i.e add thickness and salinity for new ice). The code is currently non-
+!> conservative in terms of heat, mass, salt.
+subroutine ML_inference(IST, G, IG, ML, dt_slow)
+  type(ice_state_type),       intent(inout)  :: IST     !< A type describing the state of the sea ice
+  type(SIS_hor_grid_type),    intent(in)     :: G       !< The horizontal grid structure
+  type(ice_grid_type),        intent(in)     :: IG      !< Sea ice specific grid
+  type(ML_CS) ,               intent(inout)  :: ML      !< Control structure for the ML model
+  real,                       intent(in)     :: dt_slow !< The thermodynamic time step [T ~> s]
+
+  real, dimension(9,SZIW_(ML),SZJW_(ML)) &
+                                   ::  IN_CNN    !< input variables to CNN (predict dSIC)
+  real, dimension(7,SZI_(G),SZJ_(G)) &
+                                   ::  IN_ANN    !< input variables to ANN (predict dCN)
+
+  real, dimension(SZI_(G),SZJ_(G)) &
+                                   :: dSIC       !< CNN predictions of aggregate SIC corrections
+  real, dimension(SZI_(G),SZJ_(G),5) &
+                                   :: dCN        !< ANN predictions of category SIC corrections
+  real, dimension(SZIW_(ML),SZJW_(ML)) &
+                                   :: land_mask  !< Land-sea mask [0=land cells, 1=ocean cells]
+  
+  integer :: i, j, k
+  integer :: is, ie, js, je, ncat
+  integer :: isdw, iedw, jsdw, jedw
+  real    :: scale, nsteps
+  
+  !normalization statistics for both networks
+  real, parameter :: &
+       !CNN stats
+       sic_mu = 0.29760098549490005, &
+       sst_mu = 2.3628579351247665, &
+       ui_mu = 0.05215740632978765, &
+       vi_mu = 0.015774301594485004, &
+       hi_mu = 0.3428559690813135, &
+       sw_mu = 67.89703631265903, &
+       ts_mu = -4.930865654514209, &
+       sss_mu = 29.812795055984434, &
+
+       sic_std = 2.3988684677904093, &
+       sst_std = 0.19315381038814353, &
+       ui_std = 8.089628019796052, & 
+       vi_std = 11.506500421554342, & 
+       hi_std = 1.68075870925751, &
+       sw_std = 0.013607104867283745, &
+       ts_std = 0.1180058324648759, & 
+       sss_std = 0.09315672798399899, & 
+
+       !ANN stats
+       dsic_mu = -0.0011355808093858428, &
+       cn1_mu = 0.013881755289701567, &
+       cn2_mu = 0.04523203783883471, &
+       cn3_mu = 0.09591018269427339, &
+       cn4_mu = 0.05589209926886554, &
+       cn5_mu = 0.12853458139886695, &
+       
+       dsic_std = 27.745509886748263, &
+       cn1_std = 18.43686888204614, &
+       cn2_std = 7.828396154351002, &
+       cn3_std = 4.63604339451611, &
+       cn4_std = 6.17786223701505, &
+       cn5_std = 3.3852270028512286
+
+  scale = dt_slow/432000.0
+  nsteps = ML%ML_freq/dt_slow !number of timesteps in ML%ML_freq
+  is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; ncat = IG%CatIce
+  isdw = ML%isdw; iedw = ML%iedw; jsdw = ML%jsdw; jedw = ML%jedw
+
+  dCN = 0.0 ; land_mask = 0.0
+  do j=js,je ; do i=is,ie
+     land_mask(i,j) = G%mask2dT(i,j)
+     do k=1,ncat
+        dCN(i,j,k) = ML%dCN_restart(i,j,k)
+     enddo
+  enddo; enddo
+
+  if ( (.not. all(dCN==0.0)) .and. (ML%count /= nsteps) ) then
+     call postprocess(IST, dCN, G, IG)
+  endif
+  
+  if ( ML%count == nsteps ) then !nsteps have passed, do inference
+
+     ! Update the wide halos
+     call pass_var(ML%SIC_filtered, ML%CNN_Domain)
+     call pass_var(ML%SST_filtered, ML%CNN_Domain)
+     call pass_vector(ML%UI_filtered, ML%VI_filtered, ML%CNN_Domain, stagger=CGRID_NE)
+     call pass_var(ML%HI_filtered, ML%CNN_Domain)
+     call pass_var(ML%SW_filtered, ML%CNN_Domain)
+     call pass_var(ML%TS_filtered, ML%CNN_Domain)
+     call pass_var(ML%SSS_filtered, ML%CNN_Domain)        
+     call pass_var(land_mask, ML%CNN_Domain)
+
+     IN_CNN = 0.0
+     ! Combine arrays for the CNN and normalize
+     do j=jsdw,jedw ; do i=isdw,iedw
+        IN_CNN(1,i,j) = land_mask(i,j) * ((ML%SIC_filtered(i,j) - sic_mu)*sic_std)
+        IN_CNN(2,i,j) = land_mask(i,j) * ((ML%SST_filtered(i,j) - sst_mu)*sst_std)
+        IN_CNN(3,i,j) = land_mask(i,j) * ((ML%UI_filtered(i,j) - ui_mu)*ui_std)
+        IN_CNN(4,i,j) = land_mask(i,j) * ((ML%VI_filtered(i,j) - vi_mu)*vi_std)
+        IN_CNN(5,i,j) = land_mask(i,j) * ((ML%HI_filtered(i,j) - hi_mu)*hi_std)
+        IN_CNN(6,i,j) = land_mask(i,j) * ((ML%SW_filtered(i,j) - sw_mu)*sw_std)
+        IN_CNN(7,i,j) = land_mask(i,j) * ((ML%TS_filtered(i,j) - ts_mu)*ts_std)
+        IN_CNN(8,i,j) = land_mask(i,j) * ((ML%SSS_filtered(i,j) - sss_mu)*sss_std)
+        IN_CNN(9,i,j) = land_mask(i,j)
+     enddo ; enddo
+
+     dSIC = 0.0
+     call CNN_forward(IN_CNN, dSIC, ML%CNN_weight_vec1, ML%CNN_weight_vec2, ML%CNN_weight_vec3, ML%CNN_weight_vec4, G)
+
+     IN_ANN = 0.0
+     do j=js,je ; do i=is,ie
+        IN_ANN(1,i,j) = G%mask2dT(i,j) * ((dSIC(i,j) - dsic_mu)*dsic_std)
+        IN_ANN(2,i,j) = G%mask2dT(i,j) * ((ML%CN_filtered(i,j,1) - cn1_mu)*cn1_std)
+        IN_ANN(3,i,j) = G%mask2dT(i,j) * ((ML%CN_filtered(i,j,2) - cn2_mu)*cn2_std)
+        IN_ANN(4,i,j) = G%mask2dT(i,j) * ((ML%CN_filtered(i,j,3) - cn3_mu)*cn3_std)
+        IN_ANN(5,i,j) = G%mask2dT(i,j) * ((ML%CN_filtered(i,j,4) - cn4_mu)*cn4_std)
+        IN_ANN(6,i,j) = G%mask2dT(i,j) * ((ML%CN_filtered(i,j,5) - cn5_mu)*cn5_std)
+        IN_ANN(7,i,j) = G%mask2dT(i,j)
+     enddo; enddo
+
+     dCN = 0.0
+     call ANN_forward(IN_ANN, dCN, ML%ANN_weight_vec1, ML%ANN_weight_vec2, ML%ANN_weight_vec3, ML%ANN_weight_vec4, G)
+
+     ML%dCN_restart(:,:,:) = 0.0
+     do j=js,je ; do i=is,ie
+        do k=1,ncat
+           dCN(i,j,k) = G%mask2dT(i,j) * (dCN(i,j,k)*scale)
+           ML%dCN_restart(i,j,k) = dCN(i,j,k)
+        enddo
+     enddo; enddo
+
+     call postprocess(IST, dCN, G, IG)
+     
+     ML%SIC_filtered(:,:) = 0.0
+     ML%SST_filtered(:,:) = 0.0
+     ML%UI_filtered(:,:) = 0.0
+     ML%VI_filtered(:,:) = 0.0
+     ML%HI_filtered(:,:) = 0.0
+     ML%SW_filtered(:,:) = 0.0
+     ML%TS_filtered(:,:) = 0.0
+     ML%SSS_filtered(:,:) = 0.0
+     ML%CN_filtered(:,:,:) = 0.0
+     ML%count = 0.
+  endif
+
+  if (ML%id_dcn>0) call post_data(ML%id_dcn, dCN, ML%diag)
+  
+  ML%count = ML%count + 1.
+
+end subroutine ML_inference
 
 ! the functions below are taken from https://github.com/CICE-Consortium/Icepack/blob/main/columnphysics/icepack_mushy_physics.F90
 ! see also pages 57--62 of the CICE manual (https://citeseerx.ist.psu.edu/document?repid=rep1&type=pdf&doi=5eca93a8fbc716474f8fd80c804319b630f90316)
