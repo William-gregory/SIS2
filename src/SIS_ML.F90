@@ -30,7 +30,7 @@ use MOM_domains,               only : pass_var, pass_vector, CGRID_NE
 use SIS_diag_mediator,         only : SIS_diag_ctrl
 use SIS_diag_mediator,         only : register_diag_field=>register_SIS_diag_field
 use SIS_diag_mediator,         only : post_SIS_data, post_data=>post_SIS_data
-use SIS2_ice_thm,              only : get_SIS2_thermo_coefs
+use SIS2_ice_thm,              only : get_SIS2_thermo_coefs, enthalpy_liquid_freeze
 use SIS_types,                 only : ice_state_type, ocean_sfc_state_type, fast_ice_avg_type, ice_ocean_flux_type
 use MOM_file_parser,           only : get_param, param_file_type
 use MOM_time_manager,          only : time_type
@@ -414,41 +414,14 @@ subroutine postprocess(IST, increments, G, IG)
   irho_ice = 1/rho_ice
 
   !Update category concentrations & bound between 0 and 1
-  !This part checks if the updated SIC in any category is below zero.
-  !If it is, spread the equivalent negative value across the other positive categories
-  !E.g if new SIC is [-0.2,0.1,0.2,0.3,0.4], then remove 0.2/4 from categories 2 through 5
-  !E.g if new SIC is [-0.2,-0.1,0.4,0.2,0.1], then remove 0.3/3 from categories 3 through 5
-  !This will continue in a 'while loop' until all categories are >= 0.
   posterior = 0.0
   do j=js,je ; do i=is,ie
-     do k=1,ncat
-        posterior(i,j,k) = IST%part_size(i,j,k) + increments(i,j,k)
-     enddo
-     
-     do
-        negatives = (posterior(i,j,1:) < 0.0)
-        if (.not. any(negatives)) exit
-
-        dists = 0.0
-        positives = 0.0
-        do k=1,ncat
-           if (negatives(k)) then
-              dists = dists + abs(posterior(i,j,k))
-           elseif (posterior(i,j,k) > 0.0) then
-              positives = positives + 1.0
-           endif
-        enddo
-
-        do k=1,ncat
-           if (posterior(i,j,k) > 0.0) then
-              posterior(i,j,k) = posterior(i,j,k) - (dists/positives)
-           elseif (posterior(i,j,k) < 0.0) then
-              posterior(i,j,k) = 0.0
-           endif
-        enddo
-     enddo
      cvr = 0.0
      do k=1,ncat
+        posterior(i,j,k) = IST%part_size(i,j,k) + increments(i,j,k)
+        if (posterior(i,j,k)<0.0) then
+           posterior(i,j,k) = 0.0
+        endif
         cvr = cvr + posterior(i,j,k)
      enddo
      if (cvr>1) then
@@ -466,7 +439,7 @@ subroutine postprocess(IST, increments, G, IG)
   !update sea ice/ocean variables based on corrected sea ice state
   !see https://github.com/CICE-Consortium/Icepack/blob/main/columnphysics/icepack_therm_itd.F90
   Tf = min(liquidus_temperature_mush(Si_new/phi_init),-0.1)
-  enth_new = enthalpy_ice(Tf, Si_new)
+  enth_new = enthalpy_liquid_freeze(Si_new, IST%ITV) !enthalpy_ice(Tf, Si_new)
   do j=js,je ; do i=is,ie
      do k=1,ncat
         !have added ice to grid cell which was previously ice free
