@@ -30,7 +30,7 @@ use MOM_domains,               only : pass_var, pass_vector, CGRID_NE
 use SIS_diag_mediator,         only : SIS_diag_ctrl
 use SIS_diag_mediator,         only : register_diag_field=>register_SIS_diag_field
 use SIS_diag_mediator,         only : post_SIS_data, post_data=>post_SIS_data
-use SIS2_ice_thm,              only : get_SIS2_thermo_coefs, enthalpy_liquid_freeze
+use SIS2_ice_thm,              only : get_SIS2_thermo_coefs, enth_from_TS
 use SIS_types,                 only : ice_state_type, ocean_sfc_state_type, fast_ice_avg_type, ice_ocean_flux_type
 use MOM_file_parser,           only : get_param, param_file_type
 use MOM_time_manager,          only : time_type
@@ -438,8 +438,8 @@ subroutine postprocess(IST, increments, G, IG)
 
   !update sea ice/ocean variables based on corrected sea ice state
   !see https://github.com/CICE-Consortium/Icepack/blob/main/columnphysics/icepack_therm_itd.F90
-  Tf = min(liquidus_temperature_mush(Si_new/phi_init),-0.1)
-  enth_new = enthalpy_liquid_freeze(Si_new, IST%ITV) !enthalpy_ice(Tf, Si_new)
+  Tf = min(liquidus_temperature_mush(Si_new/phi_init),-2.0)
+  enth_new = enth_from_TS(Tf, Si_new, IST%ITV)
   do j=js,je ; do i=is,ie
      do k=1,ncat
         !have added ice to grid cell which was previously ice free
@@ -449,7 +449,7 @@ subroutine postprocess(IST, increments, G, IG)
            IST%mH_pond(i,j,k) = 0.0
            IST%enth_snow(i,j,k,1) = 0.0
            do m=1,nlay
-              IST%enth_ice(i,j,k,m) = enth_new!*irho_ice
+              IST%enth_ice(i,j,k,m) = enth_new
               IST%sal_ice(i,j,k,m) = Si_new
            enddo
            !have removed all sea in a grid cell
