@@ -256,7 +256,7 @@ subroutine finish_ice_transport(CAS, IST, TrReg, G, US, IG, dt, CS, rdg_rate)
 !  real, dimension(SZI_(G),SZJ_(G)) :: &
 !    rdg_open, & ! formation rate of open water due to ridging [T-1 ~> s-1]
 !    rdg_vosh    ! rate of ice mass shifted from level to ridged ice [R Z T-1 ~> kg m-2 s-1]
-  real :: yr_dt           ! Tne number of timesteps in a year [nondim].
+  real :: sec_dt           ! Tne number of timesteps in a year [nondim].
   real, dimension(SZI_(G),SZJ_(G)) :: trans_conv   ! The convergence of frozen water transport of ice and snow [R Z ~> kg m-2].
   real, dimension(SZI_(G),SZJ_(G)) :: trans_conv_i ! The convergence of frozen water transport of ice [R Z ~> kg m-2].
   real, dimension(SZI_(G),SZJ_(G)) :: trans_conv_s ! The convergence of frozen water transport of snow [R Z ~> kg m-2].
@@ -1095,8 +1095,6 @@ subroutine get_cell_mass(IST, G, IG, cell_mass, scale, ice_mass, snow_mass)
     if (present(snow_mass)) then
        snow_mass(i,j) = snow_mass(i,j) + IST%part_size(i,j,k) * H_to_units * &
             (IST%mH_snow(i,j,k) + IST%mH_pond(i,j,k))
-    endif
-            
     endif
   enddo ; enddo ; enddo
 

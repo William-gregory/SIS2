@@ -584,7 +584,7 @@ subroutine SIS2_thermodynamics(IST, dt_slow, CS, OSS, FIA, IOF, G, US, IG)
     bsnk, &               ! The bottom melting mass sink of ice and snow [R Z T-1 ~> kg m-2 s-1]
     bsnk_i, &             ! The bottom melting mass sink of ice [R Z T-1 ~> kg m-2 s-1]
     bsnk_s, &             ! The bottom melting mass sink of snow[R Z T-1 ~> kg m-2 s-1]
-    tmp2d, &              ! A temporary array for mass balance diagnostics [R Z yr-1 ~> kg m-2 yr-1]
+    tmp2d, &              ! A temporary array for mass balance diagnostics [R Z s-1 ~> kg m-2 s-1]
     qflx_lim_ice, &       ! Ice limiting heat flux [Q R Z T-1 ~> W m-2]
     qflx_res_ice, &       ! Ice restoring heat flux [Q R Z T-1 ~> W m-2]
     cool_nudge, &         ! A heat flux out of the sea ice that
@@ -635,8 +635,8 @@ subroutine SIS2_thermodynamics(IST, dt_slow, CS, OSS, FIA, IOF, G, US, IG)
   real :: rho_ice     ! The nominal density of sea ice [R ~> kg m-3].
 
   real :: Idt_slow    ! The inverse of the thermodynamic step [T-1 ~> s-1].
-  real :: yr_dtslow   ! The ratio of 1 year to the thermodynamic time step times some scaling
-                      ! factors, used to change the units of several diagnostics to rate yr-1.
+  real :: sec_dtslow   ! The ratio of 1 year to the thermodynamic time step times some scaling
+                      ! factors, used to change the units of several diagnostics to rate s-1.
   real :: heat_to_ocn    ! The heat passed from the ice to the ocean [Q R Z ~> J m-2]
   real :: water_to_ocn   ! The water passed to the ocean [R Z ~> kg m-2]
   real :: salt_to_ocn    ! The salt passed to the ocean [R Z S ~> gSalt m-2]
