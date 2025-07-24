@@ -71,7 +71,7 @@ type, public :: SIS_transport_CS ; private
 
   !>@{ Diagnostic IDs
   integer :: id_ix_trans = -1, id_iy_trans = -1, id_xprt = -1, id_rdgr = -1
-  integer :: id_xprt_i = -1, id_xprt_s = -1
+  integer :: id_xprt_i = -1, id_xprt_s = -1, id_xprt_c = -1
   ! integer :: id_rdgo=-1, id_rdgv=-1 ! These do not exist yet
   !!@}
 
@@ -101,6 +101,8 @@ type, public :: cell_average_state_type ; private
                                                 !! when the fields were populated [R Z ~> kg m-2].
   real, allocatable, dimension(:,:) :: mS0      !< The total mass of snow and melt pond water
                                                 !! when the fields were populated [R Z ~> kg m-2].
+  real, allocatable, dimension(:,:) :: cvr0     !< The total area of sea ice
+                                                !! when the fields were populated [nondim]
   real, allocatable, dimension(:,:) :: uh_sum   !< The accumulated zonal mass fluxes of ice, snow
                                                 !! and melt pond water, summed across categories,
                                                 !! since the fields were populated [R Z L2 ~> kg].
@@ -260,6 +262,7 @@ subroutine finish_ice_transport(CAS, IST, TrReg, G, US, IG, dt, CS, rdg_rate)
   real, dimension(SZI_(G),SZJ_(G)) :: trans_conv   ! The convergence of frozen water transport of ice and snow [R Z ~> kg m-2].
   real, dimension(SZI_(G),SZJ_(G)) :: trans_conv_i ! The convergence of frozen water transport of ice [R Z ~> kg m-2].
   real, dimension(SZI_(G),SZJ_(G)) :: trans_conv_s ! The convergence of frozen water transport of snow [R Z ~> kg m-2].
+  real, dimension(SZI_(G),SZJ_(G)) :: trans_conv_c ! The convergence of frozen water area [nondim].
   real, dimension(SZI_(G),SZJ_(G)) :: ice_cover ! The summed fractional ice concentration [nondim].
   type(EFP_type) :: tot_ice, tot_snow, enth_ice, enth_snow
   real :: I_tot_ice, I_tot_snow
@@ -380,7 +383,7 @@ subroutine finish_ice_transport(CAS, IST, TrReg, G, US, IG, dt, CS, rdg_rate)
   ! Calculate and send transport-related diagnostics.
   Idt = 0.0 ; if (CAS%dt_sum > 0.0) Idt = 1.0 / CAS%dt_sum
   if (CS%id_xprt>0) then
-    sec_dt = (8.64e4) * US%s_to_T * Idt
+    sec_dt = US%s_to_T * Idt
     call get_cell_mass(IST, G, IG, trans_conv)
     do j=jsc,jec ; do i=isc,iec
       trans_conv(i,j) = (trans_conv(i,j) - CAS%mass0(i,j)) * sec_dt
@@ -388,7 +391,7 @@ subroutine finish_ice_transport(CAS, IST, TrReg, G, US, IG, dt, CS, rdg_rate)
     call post_SIS_data(CS%id_xprt, trans_conv, CS%diag)
   endif
   if (CS%id_xprt_i>0) then
-    sec_dt = (8.64e4) * US%s_to_T * Idt
+    sec_dt = US%s_to_T * Idt
     call get_cell_mass(IST, G, IG, trans_conv, ice_mass=trans_conv_i)
     do j=jsc,jec ; do i=isc,iec
       trans_conv_i(i,j) = (trans_conv_i(i,j) - CAS%mI0(i,j)) * sec_dt
@@ -396,12 +399,20 @@ subroutine finish_ice_transport(CAS, IST, TrReg, G, US, IG, dt, CS, rdg_rate)
     call post_SIS_data(CS%id_xprt_i, trans_conv_i, CS%diag)
   endif
   if (CS%id_xprt_s>0) then
-    sec_dt = (8.64e4) * US%s_to_T * Idt
+    sec_dt = US%s_to_T * Idt
     call get_cell_mass(IST, G, IG, trans_conv, snow_mass=trans_conv_s)
     do j=jsc,jec ; do i=isc,iec
       trans_conv_s(i,j) = (trans_conv_s(i,j) - CAS%mS0(i,j)) * sec_dt
     enddo ; enddo
     call post_SIS_data(CS%id_xprt_s, trans_conv_s, CS%diag)
+  endif
+  if (CS%id_xprt_c>0) then
+    sec_dt = US%s_to_T * Idt
+    call get_cell_mass(IST, G, IG, trans_conv, cover=trans_conv_c)
+    do j=jsc,jec ; do i=isc,iec
+      trans_conv_c(i,j) = (trans_conv_c(i,j) - CAS%cvr0(i,j)) * sec_dt
+    enddo ; enddo
+    call post_SIS_data(CS%id_xprt_c, trans_conv_c, CS%diag)
   endif
   if (CS%id_ix_trans>0) then
     do j=jsc,jec ; do I=isc-1,iec ; uf(I,j) = Idt * CAS%uh_sum(I,j) ; enddo ; enddo
@@ -490,6 +501,7 @@ subroutine ice_state_to_cell_ave_state(IST, G, US, IG, CS, CAS)
   if (allocated(CAS%mass0))  call get_cell_mass(IST, G, IG, CAS%mass0)
   if (allocated(CAS%mI0))  call get_cell_mass(IST, G, IG, CAS%mass0, ice_mass=CAS%mI0)
   if (allocated(CAS%mS0))  call get_cell_mass(IST, G, IG, CAS%mass0, snow_mass=CAS%mS0)
+  if (allocated(CAS%cvr0))  call get_cell_mass(IST, G, IG, CAS%mass0, cover=CAS%cvr0)
   if (allocated(CAS%uh_sum)) CAS%uh_sum(:,:) = 0.0
   if (allocated(CAS%vh_sum)) CAS%vh_sum(:,:) = 0.0
 
@@ -1064,7 +1076,7 @@ subroutine get_total_mass(IST, G, US, IG, tot_ice, tot_snow, tot_pond, scale)
 end subroutine get_total_mass
 
 !> get_cell_mass determines the integrated mass of snow and ice in each cell
-subroutine get_cell_mass(IST, G, IG, cell_mass, scale, ice_mass, snow_mass)
+subroutine get_cell_mass(IST, G, IG, cell_mass, scale, ice_mass, snow_mass, cover)
   type(ice_state_type),             intent(in)  :: IST !< A type describing the state of the sea ice
   type(SIS_hor_grid_type),          intent(in)  :: G   !< The horizontal grid type
   type(ice_grid_type),              intent(in)  :: IG  !< The sea-ice specific grid type
@@ -1072,6 +1084,7 @@ subroutine get_cell_mass(IST, G, IG, cell_mass, scale, ice_mass, snow_mass)
   real,                   optional, intent(in)  :: scale !< A scaling factor from H to the desired units.
   real, dimension(SZI_(G),SZJ_(G)), optional, intent(out) :: ice_mass !< The total amount of ice [R Z ~> kg m-2].
   real, dimension(SZI_(G),SZJ_(G)), optional, intent(out) :: snow_mass !< The total amount of snow [R Z ~> kg m-2].
+  real, dimension(SZI_(G),SZJ_(G)), optional, intent(out) :: cover !< The total area of sea ice [nondim].
 
   real :: H_to_units ! A conversion factor from H to the desired output units.
   integer :: i, j, k, isc, iec, jsc, jec
@@ -1086,6 +1099,9 @@ subroutine get_cell_mass(IST, G, IG, cell_mass, scale, ice_mass, snow_mass)
   if (present(snow_mass)) then
      snow_mass(:,:) = 0.0
   endif
+  if (present(cover)) then
+     snow_mass(:,:) = 0.0
+  endif
   do k=1,IG%CatIce ; do j=jsc,jec ; do i=isc,iec
     cell_mass(i,j) = cell_mass(i,j) + IST%part_size(i,j,k) * H_to_units * &
             ((IST%mH_snow(i,j,k) + IST%mH_pond(i,j,k)) + IST%mH_ice(i,j,k))
@@ -1095,6 +1111,9 @@ subroutine get_cell_mass(IST, G, IG, cell_mass, scale, ice_mass, snow_mass)
     if (present(snow_mass)) then
        snow_mass(i,j) = snow_mass(i,j) + IST%part_size(i,j,k) * H_to_units * &
             (IST%mH_snow(i,j,k) + IST%mH_pond(i,j,k))
+    endif
+    if (present(cover)) then
+       cover(i,j) = cover(i,j) + IST%part_size(i,j,k)
     endif
   enddo ; enddo ; enddo
 
@@ -1287,6 +1306,9 @@ subroutine SIS_transport_init(Time, G, IG, US, param_file, diag, CS, continuity_
   CS%id_xprt_s = register_diag_field('ice_model', 'XPRTs', diag%axesT1, Time, &
                'frozen water transport convergence (of snow)', 'kg/(m^2*s)', conversion=US%RZ_to_kg_m2, &
                missing_value=missing)
+  CS%id_xprt_c = register_diag_field('ice_model', 'XPRTc', diag%axesT1, Time, &
+               'frozen water area transport convergence', 'area_fraction/s', conversion=US%RZ_to_kg_m2, &
+               missing_value=missing)
   CS%id_rdgr = register_diag_field('ice_model', 'RDG_RATE', diag%axesT1, Time, &
                'ice ridging rate', '1/sec', conversion=US%s_to_T, missing_value=missing)
 !### THESE DIAGNOSTICS DO NOT EXIST YET.
@@ -1322,6 +1344,8 @@ subroutine alloc_cell_average_state_type(CAS, HI, IG, CS)
       call safe_alloc(CAS%mI0, isd, ied, jsd, jed)
     if (CS%id_xprt_s>0) &
       call safe_alloc(CAS%mS0, isd, ied, jsd, jed)
+    if (CS%id_xprt_c>0) &
+      call safe_alloc(CAS%cvr0, isd, ied, jsd, jed)
     if (CS%id_ix_trans>0) &
       call safe_alloc(CAS%uh_sum, HI%IsdB, HI%IedB, jsd, jed)
     if (CS%id_iy_trans>0) &
@@ -1338,6 +1362,7 @@ subroutine dealloc_cell_average_state_type(CAS)
   if (allocated(CAS%mass0)) deallocate(CAS%mass0)
   if (allocated(CAS%mI0)) deallocate(CAS%mI0)
   if (allocated(CAS%mS0)) deallocate(CAS%mS0)
+  if (allocated(CAS%cvr0)) deallocate(CAS%cvr0)
   if (allocated(CAS%uh_sum)) deallocate(CAS%uh_sum)
   if (allocated(CAS%vh_sum)) deallocate(CAS%vh_sum)
   deallocate(CAS)
