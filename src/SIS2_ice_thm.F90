@@ -1009,7 +1009,8 @@ subroutine ice_resize_SIS2(a_ice, m_pond, m_lay, Enthalpy, Sice_therm, Salin, &
                            snow, rain, evap, tmlt, bmlt, NkIce, npassive, TrLay, &
                            heat_to_ocn, h2o_ice_to_ocn, h2o_ocn_to_ice, evap_from_ocn, &
                            snow_to_ice, salt_to_ice, ITV, US, CS, ablation, &
-                           ablation_i, ablation_s, enthalpy_evap, enthalpy_melt, enthalpy_freeze)
+                           ablation_i, ablation_s, enthalpy_evap, enthalpy_melt, enthalpy_freeze)!, &
+                           !heat_to_ocn_bot, h2o_ice_to_ocn_bot, salt_to_ice_bot, enthalpy_melt_bot)
   ! mw/new - melt pond - added first two arguments & rain
   real, intent(in   ) :: a_ice       !< area of ice (1-open_water_frac) for pond retention [nondim]
   real, intent(inout) :: m_pond      !< melt pond mass [R Z ~> kg m-2]
@@ -1036,6 +1037,11 @@ subroutine ice_resize_SIS2(a_ice, m_pond, m_lay, Enthalpy, Sice_therm, Salin, &
   real, intent(  out) :: evap_from_ocn  !< evaporation flux from ocean [R Z ~> kg m-2]
   real, intent(  out) :: snow_to_ice !< snow below waterline becomes ice [R Z ~> kg m-2]
   real, intent(  out) :: salt_to_ice !< Net flux of salt to the ice [R Z S ~> gSalt m-2].
+
+  !real, intent(  out) :: h2o_ice_to_ocn_bot
+  !real, intent(  out) :: heat_to_ocn_bot
+  !real, intent(  out) :: salt_to_ice_bot
+
   type(ice_thermo_type), intent(in) :: ITV !< The ice thermodynamic parameter structure.
   type(unit_scale_type), intent(in) :: US  !< A structure with unit conversion factors
   type(SIS2_ice_thm_CS), intent(in) :: CS  !< The SIS2_ice_thm control structure.
@@ -1047,6 +1053,7 @@ subroutine ice_resize_SIS2(a_ice, m_pond, m_lay, Enthalpy, Sice_therm, Salin, &
                                        !! by evaporation / sublimation. [Q R Z ~> J m-2]
   real, intent(  out) :: enthalpy_melt !< The enthalpy loss due to the mass loss
                                        !! by melting [Q R Z ~> J m-2].
+  !real, intent(  out) :: enthalpy_melt_bot 
   real, intent(  out) :: enthalpy_freeze !< The enthalpy gain due to the mass gain
                                        !! by freezing [Q R Z ~> J m-2].
 
@@ -1065,6 +1072,7 @@ subroutine ice_resize_SIS2(a_ice, m_pond, m_lay, Enthalpy, Sice_therm, Salin, &
   real :: m_submerged         ! The submerged mass of ice [R Z ~> kg m-2].
   real :: salin_freeze        ! The salinity of newly frozen ice [S ~> gSalt kg-1].
   real :: enthM_evap, enthM_melt, enthM_freezing, enthM_snowfall ! [Q R Z ~> J m-2]
+  !real :: enthM_melt_bot
   real :: LI          ! The latent heat of fusion [Q ~> J kg-1].
   real :: Lat_vapor   ! The latent heat of vaporization [Q ~> J kg-1].
   real :: rho_ice     ! The nominal density of sea ice [R ~> kg m-3].
@@ -1232,6 +1240,11 @@ subroutine ice_resize_SIS2(a_ice, m_pond, m_lay, Enthalpy, Sice_therm, Salin, &
 
   melt_left = bot_melt ; ablation = 0.0
   ablation_i = 0.0 ; ablation_s = 0.0
+  !h2o_ice_to_ocn_bot = 0.0
+  !enthM_melt_bot = 0.0
+  !salt_to_ice_bot = 0.0
+  !enthalpy_melt_bot = 0.0
+  !heat_to_ocn_bot = 0.0
   if (melt_left > 0.0) then ! melt ice and snow from below
     do k=NkIce,0,-1
       if (melt_left < m_lay(k) * (enth_fr(k) - Enthalpy(k))) then
@@ -1243,8 +1256,11 @@ subroutine ice_resize_SIS2(a_ice, m_pond, m_lay, Enthalpy, Sice_therm, Salin, &
       endif
       m_lay(k) = m_lay(k) - M_melt
       if (k>0) salt_to_ice = salt_to_ice - Salin(k) * M_melt
+      !if (k>0) salt_to_ice_bot = salt_to_ice_bot - Salin(k) * M_melt
       h2o_ice_to_ocn = h2o_ice_to_ocn + M_melt
+      !h2o_ice_to_ocn_bot = h2o_ice_ocn_bot + M_melt
       enthM_melt = enthM_melt + M_melt*enth_fr(k)
+      !enthM_melt_bot = enthM_melt_bot + M_melt*enth_fr(k)
       ablation = ablation + M_melt
       if (k > 0) then
          ablation_i = ablation_i + M_melt
@@ -1256,11 +1272,13 @@ subroutine ice_resize_SIS2(a_ice, m_pond, m_lay, Enthalpy, Sice_therm, Salin, &
     enddo
 
     heat_to_ocn = heat_to_ocn + melt_left
+    !heat_to_ocn_bot = heat_to_ocn_bot + melt_left
   endif
 
   ! There are no further heat or mass losses or gains by the ice+snow.
   enthalpy_evap = enthM_evap
   enthalpy_melt = enthM_melt
+  !enthalpy_melt_bot = enthM_melt_bot
   enthalpy_freeze = enthM_freezing
 
   ! calculate total ice for pond drainage and waterline adjustments below
