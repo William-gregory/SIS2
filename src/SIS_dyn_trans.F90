@@ -370,7 +370,7 @@ subroutine SIS_dynamics_trans(IST, OSS, FIA, IOF, dt_slow, CS, icebergs_CS, G, U
   real :: dt_adv_cycle ! The length of the advective cycle timestep [T ~> s].
   real :: wt_new, wt_prev ! Weights in an average.
   real, dimension(SZI_(G),SZJ_(G)) :: &
-    rdg_rate  ! A ridging rate [T-1 ~> s-1], calculated from the strain rates in the dynamics.
+     rdg_rate  ! A ridging rate [T-1 ~> s-1], calculated from the strain rates in the dynamics.
   type(dyn_state_2d), pointer :: DS2d => NULL()  ! A simplified 2-d description of the ice state
                                                  ! integrated across thickness categories and layers.
   integer :: i, j, k, n, isc, iec, jsc, jec, ncat
@@ -385,7 +385,7 @@ subroutine SIS_dynamics_trans(IST, OSS, FIA, IOF, dt_slow, CS, icebergs_CS, G, U
   IOF%stress_count = 0
 
   DS2d => CS%DS2d
-
+  
   ndyn_steps = 1 ; nadv_cycle = 1
   if ((CS%dt_advect > 0.0) .and. (CS%dt_advect < dt_slow)) &
     nadv_cycle = max(CEILING(dt_slow/CS%dt_advect - 1e-9), 1)

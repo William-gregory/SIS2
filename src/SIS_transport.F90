@@ -392,27 +392,27 @@ subroutine finish_ice_transport(CAS, IST, TrReg, G, US, IG, dt, CS, rdg_rate)
   endif
   if (CS%id_xprt_i>0) then
     sec_dt = US%s_to_T * Idt
-    call get_cell_mass(IST, G, IG, trans_conv, ice_mass=trans_conv_i)
+    call get_ice_mass(IST, G, IG, trans_conv)
     do j=jsc,jec ; do i=isc,iec
-      trans_conv_i(i,j) = (trans_conv_i(i,j) - CAS%mI0(i,j)) * sec_dt
+      trans_conv(i,j) = (trans_conv(i,j) - CAS%mI0(i,j)) * sec_dt
     enddo ; enddo
-    call post_SIS_data(CS%id_xprt_i, trans_conv_i, CS%diag)
+    call post_SIS_data(CS%id_xprt_i, trans_conv, CS%diag)
   endif
   if (CS%id_xprt_s>0) then
     sec_dt = US%s_to_T * Idt
-    call get_cell_mass(IST, G, IG, trans_conv, snow_mass=trans_conv_s)
+    call get_snow_mass(IST, G, IG, trans_conv)
     do j=jsc,jec ; do i=isc,iec
-      trans_conv_s(i,j) = (trans_conv_s(i,j) - CAS%mS0(i,j)) * sec_dt
+      trans_conv(i,j) = (trans_conv(i,j) - CAS%mS0(i,j)) * sec_dt
     enddo ; enddo
-    call post_SIS_data(CS%id_xprt_s, trans_conv_s, CS%diag)
+    call post_SIS_data(CS%id_xprt_s, trans_conv, CS%diag)
   endif
   if (CS%id_xprt_c>0) then
     sec_dt = US%s_to_T * Idt
-    call get_cell_mass(IST, G, IG, trans_conv, cover=trans_conv_c)
+    call get_ice_area(IST, G, IG, trans_conv)
     do j=jsc,jec ; do i=isc,iec
-      trans_conv_c(i,j) = (trans_conv_c(i,j) - CAS%cvr0(i,j)) * sec_dt
+      trans_conv(i,j) = (trans_conv(i,j) - CAS%cvr0(i,j)) * sec_dt
     enddo ; enddo
-    call post_SIS_data(CS%id_xprt_c, trans_conv_c, CS%diag)
+    call post_SIS_data(CS%id_xprt_c, trans_conv, CS%diag)
   endif
   if (CS%id_ix_trans>0) then
     do j=jsc,jec ; do I=isc-1,iec ; uf(I,j) = Idt * CAS%uh_sum(I,j) ; enddo ; enddo
@@ -499,9 +499,9 @@ subroutine ice_state_to_cell_ave_state(IST, G, US, IG, CS, CAS)
   ! Handle diagnostics
   CAS%dt_sum = 0.0
   if (allocated(CAS%mass0))  call get_cell_mass(IST, G, IG, CAS%mass0)
-  if (allocated(CAS%mI0))  call get_cell_mass(IST, G, IG, CAS%mass0, ice_mass=CAS%mI0)
-  if (allocated(CAS%mS0))  call get_cell_mass(IST, G, IG, CAS%mass0, snow_mass=CAS%mS0)
-  if (allocated(CAS%cvr0))  call get_cell_mass(IST, G, IG, CAS%mass0, cover=CAS%cvr0)
+  if (allocated(CAS%mI0))  call get_ice_mass(IST, G, IG, CAS%mI0)
+  if (allocated(CAS%mS0))  call get_snow_mass(IST, G, IG, CAS%mS0)
+  if (allocated(CAS%cvr0))  call get_ice_area(IST, G, IG, CAS%cvr0)
   if (allocated(CAS%uh_sum)) CAS%uh_sum(:,:) = 0.0
   if (allocated(CAS%vh_sum)) CAS%vh_sum(:,:) = 0.0
 
@@ -1076,15 +1076,12 @@ subroutine get_total_mass(IST, G, US, IG, tot_ice, tot_snow, tot_pond, scale)
 end subroutine get_total_mass
 
 !> get_cell_mass determines the integrated mass of snow and ice in each cell
-subroutine get_cell_mass(IST, G, IG, cell_mass, scale, ice_mass, snow_mass, cover)
+subroutine get_cell_mass(IST, G, IG, cell_mass, scale)
   type(ice_state_type),             intent(in)  :: IST !< A type describing the state of the sea ice
   type(SIS_hor_grid_type),          intent(in)  :: G   !< The horizontal grid type
   type(ice_grid_type),              intent(in)  :: IG  !< The sea-ice specific grid type
   real, dimension(SZI_(G),SZJ_(G)), intent(out) :: cell_mass !< The total amount of ice and snow [R Z ~> kg m-2].
   real,                   optional, intent(in)  :: scale !< A scaling factor from H to the desired units.
-  real, dimension(SZI_(G),SZJ_(G)), optional, intent(out) :: ice_mass !< The total amount of ice [R Z ~> kg m-2].
-  real, dimension(SZI_(G),SZJ_(G)), optional, intent(out) :: snow_mass !< The total amount of snow [R Z ~> kg m-2].
-  real, dimension(SZI_(G),SZJ_(G)), optional, intent(out) :: cover !< The total area of sea ice [nondim].
 
   real :: H_to_units ! A conversion factor from H to the desired output units.
   integer :: i, j, k, isc, iec, jsc, jec
@@ -1093,31 +1090,71 @@ subroutine get_cell_mass(IST, G, IG, cell_mass, scale, ice_mass, snow_mass, cove
   H_to_units = 1.0 ; if (present(scale)) H_to_units = scale
 
   cell_mass(:,:) = 0.0
-  if (present(ice_mass)) then
-     ice_mass(:,:) = 0.0
-  endif
-  if (present(snow_mass)) then
-     snow_mass(:,:) = 0.0
-  endif
-  if (present(cover)) then
-     cover(:,:) = 0.0
-  endif
   do k=1,IG%CatIce ; do j=jsc,jec ; do i=isc,iec
     cell_mass(i,j) = cell_mass(i,j) + IST%part_size(i,j,k) * H_to_units * &
             ((IST%mH_snow(i,j,k) + IST%mH_pond(i,j,k)) + IST%mH_ice(i,j,k))
-    if (present(ice_mass)) then
-       ice_mass(i,j) = ice_mass(i,j) + IST%part_size(i,j,k) * H_to_units * IST%mH_ice(i,j,k)
-    endif
-    if (present(snow_mass)) then
-       snow_mass(i,j) = snow_mass(i,j) + IST%part_size(i,j,k) * H_to_units * &
-            (IST%mH_snow(i,j,k) + IST%mH_pond(i,j,k))
-    endif
-    if (present(cover)) then
-       cover(i,j) = cover(i,j) + IST%part_size(i,j,k)
-    endif
   enddo ; enddo ; enddo
 
 end subroutine get_cell_mass
+
+!> get_ice_mass determines the integrated mass of ice in each cell
+subroutine get_ice_mass(IST, G, IG, cell_mass, scale)
+  type(ice_state_type),             intent(in)  :: IST !< A type describing the state of the sea ice
+  type(SIS_hor_grid_type),          intent(in)  :: G   !< The horizontal grid type
+  type(ice_grid_type),              intent(in)  :: IG  !< The sea-ice specific grid type
+  real, dimension(SZI_(G),SZJ_(G)), intent(out) :: cell_mass !< The total amount of ice [R Z ~> kg m-2].
+  real,                   optional, intent(in)  :: scale !< A scaling factor from H to the desired units.
+
+  real :: H_to_units ! A conversion factor from H to the desired output units.
+  integer :: i, j, k, isc, iec, jsc, jec
+  isc = G%isc ; iec = G%iec ; jsc = G%jsc ; jec = G%jec
+
+  H_to_units = 1.0 ; if (present(scale)) H_to_units = scale
+
+  cell_mass(:,:) = 0.0
+  do k=1,IG%CatIce ; do j=jsc,jec ; do i=isc,iec
+    cell_mass(i,j) = cell_mass(i,j) + IST%part_size(i,j,k) * H_to_units * IST%mH_ice(i,j,k)
+  enddo ; enddo ; enddo
+
+end subroutine get_ice_mass
+
+!> get_snow_mass determines the integrated mass of snow and ponds in each cell
+subroutine get_snow_mass(IST, G, IG, cell_mass, scale)
+  type(ice_state_type),             intent(in)  :: IST !< A type describing the state of the sea ice
+  type(SIS_hor_grid_type),          intent(in)  :: G   !< The horizontal grid type
+  type(ice_grid_type),              intent(in)  :: IG  !< The sea-ice specific grid type
+  real, dimension(SZI_(G),SZJ_(G)), intent(out) :: cell_mass !< The total amount of snow [R Z ~> kg m-2].
+  real,                   optional, intent(in)  :: scale !< A scaling factor from H to the desired units.
+
+  real :: H_to_units ! A conversion factor from H to the desired output units.
+  integer :: i, j, k, isc, iec, jsc, jec
+  isc = G%isc ; iec = G%iec ; jsc = G%jsc ; jec = G%jec
+
+  H_to_units = 1.0 ; if (present(scale)) H_to_units = scale
+
+  cell_mass(:,:) = 0.0
+  do k=1,IG%CatIce ; do j=jsc,jec ; do i=isc,iec
+    cell_mass(i,j) = cell_mass(i,j) + IST%part_size(i,j,k) * H_to_units * (IST%mH_snow(i,j,k) + IST%mH_pond(i,j,k))
+  enddo ; enddo ; enddo
+
+end subroutine get_snow_mass
+
+!> get_ice_area determines the integrated area of ice in each grid cell
+subroutine get_ice_area(IST, G, IG, cell_area)
+  type(ice_state_type),             intent(in)  :: IST !< A type describing the state of the sea ice
+  type(SIS_hor_grid_type),          intent(in)  :: G   !< The horizontal grid type
+  type(ice_grid_type),              intent(in)  :: IG  !< The sea-ice specific grid type
+  real, dimension(SZI_(G),SZJ_(G)), intent(out) :: cell_area !< The fractional cover of ice [nondim].
+
+  integer :: i, j, k, isc, iec, jsc, jec
+  isc = G%isc ; iec = G%iec ; jsc = G%jsc ; jec = G%jec
+
+  cell_area(:,:) = 0.0
+  do k=1,IG%CatIce ; do j=jsc,jec ; do i=isc,iec
+    cell_area(i,j) = cell_area(i,j) + IST%part_size(i,j,k)
+  enddo ; enddo ; enddo
+
+end subroutine get_ice_area
 
 subroutine cell_mass_from_CAS(CAS, G, IG, mca, scale)
   type(cell_average_state_type),    intent(in)  :: CAS !< A structure with ocean-cell averaged masses by
