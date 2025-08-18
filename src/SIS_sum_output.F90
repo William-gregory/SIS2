@@ -19,7 +19,7 @@ use MOM_coms, only : EFP_type, operator(+), operator(-), assignment(=), EFP_to_r
 use MOM_error_handler, only : SIS_error=>MOM_error, FATAL, WARNING, is_root_pe
 use MOM_file_parser, only : get_param, log_param, log_version, param_file_type
 ! use MOM_io, only : create_file, fieldtype, flush_file, reopen_file, vardesc, write_field
-use MOM_io, only : open_file, ensembler
+use MOM_io, only : open_file, get_filename_appendix
 use MOM_io, only : APPEND_FILE, ASCII_FILE, SINGLE_FILE, WRITEONLY_FILE
 use MOM_string_functions, only : slasher
 use MOM_time_manager, only : time_type, get_time, operator(>), operator(-)
@@ -109,7 +109,7 @@ end type SIS_sum_out_CS
 contains
 
 !> Initialize the SIS_sum_output control structure, allocate memory and store runtime parameters.
-subroutine SIS_sum_output_init(G, param_file, directory, Input_start_time, CS, ntrunc, ensemble_num)
+subroutine SIS_sum_output_init(G, param_file, directory, Input_start_time, CS, ntrunc)
   type(SIS_hor_grid_type),  intent(in)    :: G      !< The horizontal grid type
   type(param_file_type),    intent(in)    :: param_file !< A structure to parse for run-time parameters
   character(len=*),         intent(in)    :: directory  !<  The directory where the statistics file goes
@@ -119,7 +119,6 @@ subroutine SIS_sum_output_init(G, param_file, directory, Input_start_time, CS, n
   integer, target, optional,intent(inout) :: ntrunc !< The integer that stores the number of times
                                                     !! the velocity has been truncated since the
                                                     !! last call to write_ice_statistics
-  integer,        optional, intent(in)    :: ensemble_num !< The ensemble id of the current member
 
   ! Local variables
   real :: Rho_0, maxvel
@@ -127,6 +126,8 @@ subroutine SIS_sum_output_init(G, param_file, directory, Input_start_time, CS, n
 #include "version_variable.h"
   character(len=40)  :: mdl = "SIS_sum_output" ! This module's name.
   character(len=200) :: statsfile  ! The name of the statistics file.
+  character(len=32) :: filename_appendix = '' !fms appendix to filename for ensemble runs
+  
 
   if (associated(CS)) then
     call SIS_error(WARNING, "SIS_sum_output_init called with associated control structure.")
@@ -156,14 +157,15 @@ subroutine SIS_sum_output_init(G, param_file, directory, Input_start_time, CS, n
                  "MAXTRUNC times between  writing ice statistics. \n"//&
                  "Set MAXTRUNC to 0 to stop if there is any truncation \n"//&
                  "of sea ice velocities.", units="truncations save_interval-1", default=0)
-
   
   call get_param(param_file, mdl, "STATISTICS_FILE", statsfile, &
                  "The file to use to write the globally integrated \n"//&
                  "statistics.", default="seaice.stats")
 
-  if (present(ensemble_num)) then
-     CS%statsfile = trim(ensembler(trim(slasher(directory))//trim(statsfile),ensemble_num))
+  !query fms_io if there is a filename_appendix (for ensemble runs)
+  call get_filename_appendix(filename_appendix)
+  if (len_trim(filename_appendix) > 0) then
+     CS%statsfile = trim(slasher(directory))//trim(statsfile)//'.'//trim(filename_appendix)
   else
      CS%statsfile = trim(slasher(directory))//trim(statsfile)
   endif
