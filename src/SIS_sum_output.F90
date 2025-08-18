@@ -19,7 +19,7 @@ use MOM_coms, only : EFP_type, operator(+), operator(-), assignment(=), EFP_to_r
 use MOM_error_handler, only : SIS_error=>MOM_error, FATAL, WARNING, is_root_pe
 use MOM_file_parser, only : get_param, log_param, log_version, param_file_type
 ! use MOM_io, only : create_file, fieldtype, flush_file, reopen_file, vardesc, write_field
-use MOM_io, only : open_file
+use MOM_io, only : open_file, ensembler
 use MOM_io, only : APPEND_FILE, ASCII_FILE, SINGLE_FILE, WRITEONLY_FILE
 use MOM_string_functions, only : slasher
 use MOM_time_manager, only : time_type, get_time, operator(>), operator(-)
@@ -109,7 +109,7 @@ end type SIS_sum_out_CS
 contains
 
 !> Initialize the SIS_sum_output control structure, allocate memory and store runtime parameters.
-subroutine SIS_sum_output_init(G, param_file, directory, Input_start_time, CS, ntrunc)
+subroutine SIS_sum_output_init(G, param_file, directory, Input_start_time, CS, ntrunc, ensemble_num)
   type(SIS_hor_grid_type),  intent(in)    :: G      !< The horizontal grid type
   type(param_file_type),    intent(in)    :: param_file !< A structure to parse for run-time parameters
   character(len=*),         intent(in)    :: directory  !<  The directory where the statistics file goes
@@ -119,6 +119,7 @@ subroutine SIS_sum_output_init(G, param_file, directory, Input_start_time, CS, n
   integer, target, optional,intent(inout) :: ntrunc !< The integer that stores the number of times
                                                     !! the velocity has been truncated since the
                                                     !! last call to write_ice_statistics
+  integer,        optional, intent(in)    :: ensemble_num !< The ensemble id of the current member
 
   ! Local variables
   real :: Rho_0, maxvel
@@ -156,16 +157,22 @@ subroutine SIS_sum_output_init(G, param_file, directory, Input_start_time, CS, n
                  "Set MAXTRUNC to 0 to stop if there is any truncation \n"//&
                  "of sea ice velocities.", units="truncations save_interval-1", default=0)
 
+  
   call get_param(param_file, mdl, "STATISTICS_FILE", statsfile, &
                  "The file to use to write the globally integrated \n"//&
                  "statistics.", default="seaice.stats")
 
-  CS%statsfile = trim(slasher(directory))//trim(statsfile)
+  if (present(ensemble_num)) then
+     CS%statsfile = trim(ensembler(trim(slasher(directory))//trim(statsfile),ensemble_num))
+  else
+     CS%statsfile = trim(slasher(directory))//trim(statsfile)
+  endif
   call log_param(param_file, mdl, "output_path/STATISTICS_FILE", CS%statsfile)
+    
 #ifdef STATSLABEL
   CS%statsfile = trim(CS%statsfile)//"."//trim(adjustl(STATSLABEL))
 #endif
-
+    
   call get_param(param_file, mdl, "TIMEUNIT", CS%Timeunit, &
                  "The time unit in seconds a number of input fields", &
                  units="s", default=86400.0)
