@@ -144,7 +144,7 @@ type ocean_sfc_state_type
   logical :: Cgrid_dyn !< If true use a C-grid discretization of the sea-ice dynamics.
 
   !>@{ diagnostic IDs for ocean surface properties
-  integer :: id_sst=-1, id_sss=-1, id_ssh=-1, id_uo=-1, id_vo=-1, id_frazil=-1
+  integer :: id_sst=-1, id_sss=-1, id_ssh=-1, id_uo=-1, id_vo=-1, id_frazil=-1, id_frazilmass=-1
   !!@}
 end type ocean_sfc_state_type
 
@@ -257,7 +257,7 @@ type fast_ice_avg_type
 !SLOW ONLY
   !!@{ Diagnostic IDs
   integer :: id_sh=-1, id_lh=-1, id_sw=-1, id_slp=-1
-  integer :: id_lw=-1, id_snofl=-1, id_rain=-1,  id_evap=-1
+  integer :: id_lw=-1, id_snofl=-1, id_rain=-1,  id_evap=-1, id_evap_i=-1, id_evap_s=-1
   integer :: id_sw_vis_dir=-1, id_sw_vis_dif=-1, id_sw_nir_dir=-1, id_sw_nir_dif=-1
   integer :: id_sw_vis=-1, id_sw_dir=-1, id_sw_dif=-1, id_sw_dn=-1, id_albedo=-1
   integer :: id_runoff=-1, id_calving=-1, id_runoff_hflx=-1, id_calving_hflx=-1

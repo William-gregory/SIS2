@@ -141,6 +141,11 @@ type slow_thermo_CS ; private
   !>@{ Diagnostic IDs
   integer :: id_qflim=-1, id_qfres=-1, id_fwnudge=-1, id_net_melt=-1, id_CMOR_melt=-1
   integer :: id_lsrc=-1, id_lsnk=-1, id_bsnk=-1, id_sn2ic=-1
+  integer :: id_lsrc_i=-1, id_lsnk_i=-1, id_bsnk_i=-1
+  integer :: id_lsrc_s=-1, id_lsnk_s=-1, id_bsnk_s=-1
+  integer :: id_lsrc_c=-1, id_lsnk_c=-1
+  integer :: id_tsnk_i=-1, id_bsrc_i=-1, id_net_i=-1, id_net_s=-1
+  integer :: id_net_c=-1,  id_sn2ic_s=-1
   !!@}
 end type slow_thermo_CS
 
@@ -319,6 +324,9 @@ subroutine slow_thermodynamics(IST, dt_slow, CS, OSS, FIA, XSF, IOF, G, US, IG, 
   ! Local variables
   real, dimension(SZI_(G),SZJ_(G))   :: &
     h_ice_input    ! The specified ice thickness, with specified_ice [m].
+  real, dimension(SZI_(G),SZJ_(G))   :: &
+    tmp2d, &
+    h2o_change_c ! The change in fractional ice area due to thermodynamics [nondim]
 
   real :: rho_ice  ! The nominal density of sea ice [R ~> kg m-3].
   real :: Idt_slow ! The inverse of the slow thermodynamic time step [T-1 ~> s-1]
@@ -331,6 +339,7 @@ subroutine slow_thermodynamics(IST, dt_slow, CS, OSS, FIA, XSF, IOF, G, US, IG, 
   real :: mass_part  ! The mass per unit cell area in a thickness category [R Z ~> kg m-2]
 
   mi_old(:,:,:) = 0.0
+  h2o_change_c(:,:) = 0.0
   isc = G%isc ; iec = G%iec ; jsc = G%jsc ; jec = G%jec ; ncat = IG%CatIce
   isd = G%isd ; ied = G%ied ; jsd = G%jsd ; jed = G%jed ; NkIce = IG%NkIce
   nb = size(FIA%flux_sw_top,4)
@@ -366,6 +375,9 @@ subroutine slow_thermodynamics(IST, dt_slow, CS, OSS, FIA, XSF, IOF, G, US, IG, 
   !
   ! Thermodynamics
   !
+  do j=jsc,jec ; do k=1,ncat ; do i=isc,iec
+    h2o_change_c(i,j) = h2o_change_c(i,j) - IST%part_size(i,j,k)
+  enddo ; enddo ; enddo
   if (CS%specified_ice) then   ! over-write changes with specifications.
     h_ice_input(:,:) = 0.0
     call get_sea_surface(CS%Time, G%HI, SST=OSS%SST_C, ice_conc=IST%part_size(:,:,1), ice_thick=h_ice_input, US=US)
@@ -468,6 +480,35 @@ subroutine slow_thermodynamics(IST, dt_slow, CS, OSS, FIA, XSF, IOF, G, US, IG, 
                               message="      Post_thermo A", check_column=.true.)
   call adjust_ice_categories(IST%mH_ice, IST%mH_snow, IST%mH_pond, IST%part_size, &
                              IST%TrReg, G, IG, CS%SIS_transport_CSp) !Niki: add ridging?
+
+  do j=jsc,jec ; do k=1,ncat ; do i=isc,iec
+    h2o_change_c(i,j) = h2o_change_c(i,j) + IST%part_size(i,j,k)
+  enddo ; enddo ; enddo
+
+  call enable_SIS_averaging(US%T_to_s*dt_slow, CS%Time, CS%diag)
+  if (CS%id_lsrc_c>0) then
+    !$OMP parallel do default(shared)
+    do j=jsc,jec ; do i=isc,iec
+      tmp2d(i,j) = max(h2o_change_c(i,j),0.0) * Idt_slow
+    enddo ; enddo
+    call post_data(CS%id_lsrc_c, tmp2d(isc:iec,jsc:jec), CS%diag)
+  endif
+  if (CS%id_lsnk_c>0) then
+    !$OMP parallel do default(shared)
+    do j=jsc,jec ; do i=isc,iec
+      tmp2d(i,j) = min(h2o_change_c(i,j),0.0) * Idt_slow
+    enddo ; enddo
+    call post_data(CS%id_lsnk_c, tmp2d(isc:iec,jsc:jec), CS%diag)
+  endif
+  if (CS%id_net_c>0) then
+    !$OMP parallel do default(shared)
+    do j=jsc,jec ; do i=isc,iec
+      tmp2d(i,j) = h2o_change_c(i,j) * Idt_slow
+    enddo ; enddo
+    call post_data(CS%id_net_c, tmp2d(isc:iec,jsc:jec), CS%diag)
+  endif
+  call SIS_diag_send_complete()
+  call disable_SIS_averaging(CS%diag)
 
   if (CS%column_check) &
     call write_ice_statistics(IST, CS%Time, CS%n_calls, G, US, IG, CS%sum_output_CSp, &
@@ -578,9 +619,15 @@ subroutine SIS2_thermodynamics(IST, dt_slow, CS, OSS, FIA, IOF, G, US, IG)
   real, dimension(G%isc:G%iec,G%jsc:G%jec)   :: icec  ! Total ice concentration [nondim]
   real, dimension(SZI_(G),SZJ_(G))   :: &
     salt_change, &        ! The change in integrated salinity [R Z S ~> gSalt m-2]
-    h2o_change, &         ! The change in water in the ice [R Z ~> kg m-2]
-    bsnk, &               ! The bottom melting mass sink [R Z T-1 ~> kg m-2 s-1]
-    tmp2d, &              ! A temporary array for mass balance diagnostics [R Z s T-1 yr-1 ~> kg m-2 yr-1]
+    h2o_change, &         ! The change in water in the ice and snow [R Z ~> kg m-2]
+    h2o_change_i, &       ! The change in water in the ice [R Z ~> kg m-2]
+    h2o_change_s, &       ! The change in water in the snow [R Z ~> kg m-2]
+    bsnk, &               ! The bottom melting mass sink of ice and snow [R Z T-1 ~> kg m-2 s-1]
+    bsnk_i, &             ! The bottom melting mass sink of ice [R Z T-1 ~> kg m-2 s-1]
+    bsnk_s, &             ! The bottom melting mass sink of snow [R Z T-1 ~> kg m-2 s-1]
+    simass_evap, &        ! The mass of ice evaporated from the surface [R Z T-1 ~> kg m-2 s-1]
+    sisnmass_evap, &      ! The mass of snow evaporated from the surface [R Z T-1 ~> kg m-2 s-1] 
+    tmp2d, &              ! A temporary array for mass balance diagnostics [R Z yr-1 ~> kg m-2 s-1]
     qflx_lim_ice, &       ! Ice limiting heat flux [Q R Z T-1 ~> W m-2]
     qflx_res_ice, &       ! Ice restoring heat flux [Q R Z T-1 ~> W m-2]
     cool_nudge, &         ! A heat flux out of the sea ice that
@@ -644,8 +691,12 @@ subroutine SIS2_thermodynamics(IST, dt_slow, CS, OSS, FIA, IOF, G, US, IG)
   real :: snow_loss      ! The loss of snow mass from transmutation [R Z ~> kg m-2]
   real :: h2o_ice_to_ocn ! The downward water flux from the ice to the ocean [R Z ~> kg m-2]
   real :: h2o_ocn_to_ice ! The upward water flux from the ocean to the ice [R Z ~> kg m-2]
+  real :: evap_i         ! The loss of ice due to evaporation [R Z ~> kg m-2]
+  real :: evap_s         ! The loss of snow due to evaporation [R Z ~> kg m-2]
   real :: evap_from_ocn  ! The evaporation from the ocean [R Z ~> kg m-2]
-  real :: bablt       ! The bottom ablation ice loss [R Z ~> kg m-2]
+  real :: bablt       ! The bottom ablation ice and snow loss [R Z ~> kg m-2]
+  real :: bablt_i     ! The bottom ablation ice loss [R Z ~> kg m-2]
+  real :: bablt_s     ! The bottom ablation snow loss [R Z ~> kg m-2]
   real :: salt_to_ice ! The flux of salt from the ocean to the ice [R Z S ~> gSalt m-2].
                       ! This may be of either sign; in some places it is an
                       ! average over the whole cell, while in others just a partition.
@@ -675,9 +726,10 @@ subroutine SIS2_thermodynamics(IST, dt_slow, CS, OSS, FIA, IOF, G, US, IG)
   integer :: i, j, k, l, m, n, b, nb, isc, iec, jsc, jec, ncat, NkIce, tr, npassive
   integer :: k_merge
   real :: LatHtFus     ! The latent heat of fusion of ice [Q ~> J kg-1].
+  real :: ILatHtFus    ! The inverse latent heat of fusion of ice [Q-1 ~> kg J-1].
   real :: LatHtVap     ! The latent heat of vaporization of water at 0C [Q ~> J kg-1].
 
-  real :: tot_heat_in, enth_here, enth_imb, norm_enth_imb, emic2, tot_heat_in2, enth_imb2
+  real :: tot_heat_in, enth_here, enth_imb, norm_enth_imb, emic2, tot_heat_in2, enth_imb2, s2i_agg
 
   isc = G%isc ; iec = G%iec ; jsc = G%jsc ; jec = G%jec ; ncat = IG%CatIce
   NkIce = IG%NkIce ; I_Nk = 1.0 / NkIce
@@ -687,6 +739,7 @@ subroutine SIS2_thermodynamics(IST, dt_slow, CS, OSS, FIA, IOF, G, US, IG)
   call get_SIS2_thermo_coefs(IST%ITV, ice_salinity=S_col, &
                    rho_ice=rho_ice, spec_thermo_salin=spec_thermo_sal, &
                    Latent_fusion=LatHtFus, Latent_vapor=LatHtVap)
+  ILatHtFus = 1.0 / LatHtFus
   S_col0(0) = 0.0 ; do m=1,NkIce ; S_col0(m) = S_col(m) ; enddo
 
   heat_fill_val = Enth_from_TS(0.0, 0.0, IST%ITV)
@@ -831,8 +884,14 @@ subroutine SIS2_thermodynamics(IST, dt_slow, CS, OSS, FIA, IOF, G, US, IG)
 
   snow_to_ice(:,:,:) = 0.0 ; net_melt(:,:) = 0.0
   bsnk(:,:) = 0.0
+  bsnk_i(:,:) = 0.0
+  bsnk_s(:,:) = 0.0
+  simass_evap(:,:) = 0.0
+  sisnmass_evap(:,:) = 0.0
   salt_change(:,:) = 0.0
   h2o_change(:,:) = 0.0
+  h2o_change_i(:,:) = 0.0
+  h2o_change_s(:,:) = 0.0
   salt_left_in_ocean(:,:) = 0.0
   !$OMP parallel default(shared) private(part_ocn)
   if (CS%ice_rel_salin <= 0.0) then
@@ -846,6 +905,8 @@ subroutine SIS2_thermodynamics(IST, dt_slow, CS, OSS, FIA, IOF, G, US, IG)
   do j=jsc,jec ; do k=1,ncat ; do i=isc,iec
     h2o_change(i,j) = h2o_change(i,j) - IST%part_size(i,j,k) * &
                       (IST%mH_snow(i,j,k) + IST%mH_ice(i,j,k))
+    h2o_change_i(i,j) = h2o_change_i(i,j) - IST%part_size(i,j,k) * IST%mH_ice(i,j,k)
+    h2o_change_s(i,j) = h2o_change_s(i,j) - IST%part_size(i,j,k) * IST%mH_snow(i,j,k)
   enddo ; enddo ; enddo
 
   ! Start accumulating the fluxes at the ocean's surface.
@@ -888,11 +949,13 @@ subroutine SIS2_thermodynamics(IST, dt_slow, CS, OSS, FIA, IOF, G, US, IG)
 
 !$OMP parallel do default(none) shared(isc,iec,jsc,jec,ncat,G,US,IST,S_col0,NkIce,S_col,dt_slow, &
 !$OMP                                  snow_to_ice,heat_in,I_NK,enth_prev,enth_mass_in_col,bsnk, &
-!$OMP                                  Idt_slow,salt_change,net_melt,LatHtFus,LatHtVap,IG,CS,OSS, &
+!$OMP                                  bsnk_i,bsnk_s,sisnmass_evap,simass_evap,Idt_slow, &
+!$OMP                                  salt_change,net_melt,LatHtFus,LatHtVap,IG,CS,OSS, &
 !$OMP                                  FIA,IOF,npassive,nb,salt_left_in_ocean) &
 !$OMP                          private(mass_prev,enthalpy,enthalpy_ocean,Salin,     &
 !$OMP                                  heat_to_ocn,h2o_ice_to_ocn,h2o_ocn_to_ice,   &
-!$OMP                                  evap_from_ocn,salt_to_ice,bablt,enth_evap,   &
+!$OMP                                  evap_from_ocn,salt_to_ice,bablt,bablt_i,     &
+!$OMP                                  bablt_s,enth_evap,evap_i,evap_s,             &
 !$OMP                                  enth_ice_to_ocn,enth_ocn_to_ice,heat_input,  &
 !$OMP                                  heat_mass_in,mass_in,mass_here,enth_here,    &
 !$OMP                                  tot_heat_in,enth_imb,mass_imb,norm_enth_imb, &
@@ -935,8 +998,9 @@ subroutine SIS2_thermodynamics(IST, dt_slow, CS, OSS, FIA, IOF, G, US, IG)
                    FIA%lprec_top(i,j,k)*dt_slow, FIA%evap_top(i,j,k)*dt_slow, &
                    FIA%tmelt(i,j,k), FIA%bmelt(i,j,k), NkIce, npassive, TrLay, &
                    heat_to_ocn, h2o_ice_to_ocn, h2o_ocn_to_ice, evap_from_ocn, &
-                   snow_to_ice(i,j,k), salt_to_ice, IST%ITV, US, CS%ice_thm_CSp, bablt, &
-                   enth_evap, enth_ice_to_ocn, enth_ocn_to_ice)
+                   snow_to_ice(i,j,k), salt_to_ice, IST%ITV, US, CS%ice_thm_CSp, &
+                   bablt, bablt_i, bablt_s, enth_evap, enth_ice_to_ocn, &
+                   enth_ocn_to_ice, evap_i, evap_s)
 
       IST%mH_snow(i,j,k) = m_lay(0)
       call rebalance_ice_layers(m_lay, mtot_ice, Enthalpy, Salin, NkIce, npassive, TrLay)
@@ -1028,7 +1092,11 @@ subroutine SIS2_thermodynamics(IST, dt_slow, CS, OSS, FIA, IOF, G, US, IG)
                                      (sw_tot * FIA%sw_abs_ocn(i,j,k))
       net_melt(i,j) = net_melt(i,j) + IST%part_size(i,j,k) * &
               ((h2o_ice_to_ocn-h2o_ocn_to_ice)*Idt_slow)
-      bsnk(i,j) = bsnk(i,j) - IST%part_size(i,j,k)*bablt*Idt_slow ! bot. melt. ablation
+      bsnk(i,j) = bsnk(i,j) - IST%part_size(i,j,k)*bablt*Idt_slow ! bot. melt. ice and snow ablation
+      bsnk_i(i,j) = bsnk_i(i,j) - IST%part_size(i,j,k)*bablt_i*Idt_slow ! bot. melt. ice ablation
+      bsnk_s(i,j) = bsnk_s(i,j) - IST%part_size(i,j,k)*bablt_s*Idt_slow ! bot. melt. snow ablation
+      simass_evap(i,j) = simass_evap(i,j) - IST%part_size(i,j,k)*evap_i*Idt_slow
+      sisnmass_evap(i,j) = sisnmass_evap(i,j) - IST%part_size(i,j,k)*evap_s*Idt_slow
 
     endif ! Applying surface fluxes to each category.
   enddo ; enddo ; enddo
@@ -1305,6 +1373,8 @@ subroutine SIS2_thermodynamics(IST, dt_slow, CS, OSS, FIA, IOF, G, US, IG)
     do k=1,ncat ; do i=isc,iec
       h2o_change(i,j) = h2o_change(i,j) + IST%part_size(i,j,k) * &
                         (IST%mH_snow(i,j,k) + IST%mH_ice(i,j,k))
+      h2o_change_i(i,j) = h2o_change_i(i,j) + IST%part_size(i,j,k) * IST%mH_ice(i,j,k)
+      h2o_change_s(i,j) = h2o_change_s(i,j) + IST%part_size(i,j,k) * IST%mH_snow(i,j,k)
     enddo ; enddo
     do i=isc,iec
       ! Note the conversion here from g m-2 to kg m-2 s-1.
@@ -1365,6 +1435,20 @@ subroutine SIS2_thermodynamics(IST, dt_slow, CS, OSS, FIA, IOF, G, US, IG)
     enddo ; enddo
     call post_data(CS%id_lsnk, tmp2d(isc:iec,jsc:jec), CS%diag)
   endif
+  if (CS%id_lsnk_i>0) then
+    !$OMP parallel do default(shared)
+    do j=jsc,jec ; do i=isc,iec
+      tmp2d(i,j) = min(h2o_change_i(i,j),0.0) * Idt_slow
+    enddo ; enddo
+    call post_data(CS%id_lsnk_i, tmp2d(isc:iec,jsc:jec), CS%diag)
+  endif
+  if (CS%id_lsnk_s>0) then
+    !$OMP parallel do default(shared)
+    do j=jsc,jec ; do i=isc,iec
+      tmp2d(i,j) = min(h2o_change_s(i,j),0.0) * Idt_slow
+    enddo ; enddo
+    call post_data(CS%id_lsnk_s, tmp2d(isc:iec,jsc:jec), CS%diag)
+  endif
   if (CS%id_lsrc>0) then
     !$OMP parallel do default(shared)
     do j=jsc,jec ; do i=isc,iec
@@ -1372,8 +1456,60 @@ subroutine SIS2_thermodynamics(IST, dt_slow, CS, OSS, FIA, IOF, G, US, IG)
     enddo ; enddo
     call post_data(CS%id_lsrc, tmp2d(isc:iec,jsc:jec), CS%diag)
   endif
+  if (CS%id_lsrc_i>0) then
+    !$OMP parallel do default(shared)
+    do j=jsc,jec ; do i=isc,iec
+      tmp2d(i,j) = max(h2o_change_i(i,j),0.0) * Idt_slow
+    enddo ; enddo
+    call post_data(CS%id_lsrc_i, tmp2d(isc:iec,jsc:jec), CS%diag)
+  endif
+  if (CS%id_lsrc_s>0) then
+    !$OMP parallel do default(shared)
+    do j=jsc,jec ; do i=isc,iec
+      tmp2d(i,j) = max(h2o_change_s(i,j),0.0) * Idt_slow
+    enddo ; enddo
+    call post_data(CS%id_lsrc_s, tmp2d(isc:iec,jsc:jec), CS%diag)
+  endif
+  if (CS%id_net_i>0) then
+    !$OMP parallel do default(shared)
+    do j=jsc,jec ; do i=isc,iec
+      tmp2d(i,j) = h2o_change_i(i,j) * Idt_slow
+    enddo ; enddo
+    call post_data(CS%id_net_i, tmp2d(isc:iec,jsc:jec), CS%diag)
+  endif
+  if (CS%id_net_s>0) then
+    !$OMP parallel do default(shared)
+    do j=jsc,jec ; do i=isc,iec
+      s2i_agg = 0.0
+      do k=1,ncat
+        s2i_agg = s2i_agg + IST%part_size(i,j,k) * snow_to_ice(i,j,k)
+      enddo    
+      tmp2d(i,j) = (min(h2o_change_s(i,j),0.0)*Idt_slow -  sisnmass_evap(i,j) - s2i_agg*Idt_slow)
+    enddo ; enddo
+    call post_data(CS%id_net_s, tmp2d(isc:iec,jsc:jec), CS%diag)
+  endif
+  if (CS%id_bsrc_i>0) then
+    !$OMP parallel do default(shared)
+    do j=jsc,jec ; do i=isc,iec   
+      s2i_agg = 0.0
+      do k=1,ncat
+        s2i_agg = s2i_agg + IST%part_size(i,j,k) * snow_to_ice(i,j,k)
+      enddo 
+      tmp2d(i,j) = (max(h2o_change_i(i,j),0.0)*Idt_slow -  s2i_agg*Idt_slow - OSS%frazil(i,j)*ILatHtFus)
+    enddo ; enddo
+    call post_data(CS%id_bsrc_i, tmp2d(isc:iec,jsc:jec), CS%diag)
+  endif
+  if (CS%id_tsnk_i>0) then
+    !$OMP parallel do default(shared)
+    do j=jsc,jec ; do i=isc,iec   
+      tmp2d(i,j) = (min(h2o_change_i(i,j),0.0)*Idt_slow -  bsnk_i(i,j) - simass_evap(i,j))
+    enddo ; enddo
+    call post_data(CS%id_tsnk_i, tmp2d(isc:iec,jsc:jec), CS%diag)
+  endif
   if (IOF%id_saltf>0) call post_data(IOF%id_saltf, IOF%flux_salt, CS%diag)
   if (CS%id_bsnk>0)  call post_data(CS%id_bsnk, bsnk, CS%diag)
+  if (CS%id_bsnk_i>0) call post_data(CS%id_bsnk_i, bsnk_i, CS%diag)
+  if (CS%id_bsnk_s>0) call post_data(CS%id_bsnk_s, bsnk_s, CS%diag)
   if (FIA%id_tmelt>0) call post_avg(FIA%id_tmelt, FIA%tmelt, IST%part_size(:,:,1:), CS%diag, G=G, &
                                     scale=Idt_slow, wtd=.true.)
   if (FIA%id_bmelt>0) call post_avg(FIA%id_bmelt, FIA%bmelt, IST%part_size(:,:,1:), CS%diag, G=G, &
@@ -1381,10 +1517,14 @@ subroutine SIS2_thermodynamics(IST, dt_slow, CS, OSS, FIA, IOF, G, US, IG)
   if (FIA%id_bheat>0) call post_data(FIA%id_bheat, OSS%bheat, CS%diag)
   if (CS%id_sn2ic>0) call post_avg(CS%id_sn2ic, snow_to_ice, IST%part_size(:,:,1:), CS%diag, G=G, &
                                     scale=Idt_slow)
+  if (CS%id_sn2ic_s>0) call post_avg(CS%id_sn2ic_s, -snow_to_ice, IST%part_size(:,:,1:), CS%diag, G=G, &
+                                    scale=Idt_slow)
   if (CS%id_qflim>0) call post_data(CS%id_qflim, qflx_lim_ice, CS%diag)
   if (CS%id_qfres>0) call post_data(CS%id_qfres, qflx_res_ice, CS%diag)
   if (CS%id_net_melt>0) call post_data(CS%id_net_melt, net_melt, CS%diag)
   if (CS%id_CMOR_melt>0) call post_data(CS%id_CMOR_melt, net_melt, CS%diag)
+  if (FIA%id_evap_i>0) call post_data(FIA%id_evap_i, simass_evap, CS%diag)
+  if (FIA%id_evap_s>0) call post_data(FIA%id_evap_s, sisnmass_evap, CS%diag)
 
   if (coupler_type_initialized(IOF%tr_flux_ocn_top)) &
     call coupler_type_send_data(IOF%tr_flux_ocn_top, CS%Time)
@@ -1595,9 +1735,63 @@ subroutine SIS_slow_thermo_init(Time, G, US, IG, param_file, diag, CS, tracer_fl
   CS%id_bsnk = register_diag_field('ice_model','BSNK',diag%axesT1, Time, &
                'frozen water local bottom sink', &
                units='kg m-2 yr-1', conversion=864e2*365.*US%RZ_T_to_kg_m2s)
+  CS%id_lsrc_i = register_diag_field('ice_model','LSRCi', diag%axesT1, Time, &
+               'frozen water local source (of ice)', &
+               units='kg m-2 s-1', conversion=US%RZ_T_to_kg_m2s)
+  CS%id_lsnk_i = register_diag_field('ice_model','LSNKi',diag%axesT1, Time, &
+               'frozen water local sink (of ice)', &
+               units='kg m-2 s-1', conversion=US%RZ_T_to_kg_m2s)
+  CS%id_bsnk_i = register_diag_field('ice_model','BSNKi',diag%axesT1, Time, &
+               'frozen water local bottom sink (of ice)', &
+               units='kg m-2 s-1', conversion=US%RZ_T_to_kg_m2s, &
+               cmor_field_name='sidmassmeltbot', &
+               cmor_standard_name='tendency_of_sea_ice_amount_due_to_basal_melting', &
+               cmor_long_name='Sea-Ice Mass Change Through Bottom Melting')
+  CS%id_lsrc_s = register_diag_field('ice_model','LSRCs', diag%axesT1, Time, &
+               'frozen water local source (of snow)', &
+               units='kg m-2 s-1', conversion=US%RZ_T_to_kg_m2s)
+  CS%id_lsnk_s = register_diag_field('ice_model','LSNKs',diag%axesT1, Time, &
+               'frozen water local sink (of snow)', &
+               units='kg m-2 s-1', conversion=US%RZ_T_to_kg_m2s)
+  CS%id_bsnk_s = register_diag_field('ice_model','BSNKs',diag%axesT1, Time, &
+               'frozen water local bottom sink (of snow)', &
+               units='kg m-2 s-1', conversion=US%RZ_T_to_kg_m2s)
+  CS%id_lsrc_c = register_diag_field('ice_model','LSRCc', diag%axesT1, Time, &
+               'frozen water area local source', units='s-1', conversion=US%s_to_T)
+  CS%id_lsnk_c = register_diag_field('ice_model','LSNKc',diag%axesT1, Time, &
+               'frozen water area local sink', units='s-1', conversion=US%s_to_T)
+
+  !CMOR diagnostics for thermodynamics             
+  CS%id_tsnk_i = register_diag_field('ice_model','sidmassmelttop', diag%axesT1, Time, &
+               'Sea-Ice Mass Change Through Surface Melting', &
+               units='kg m-2 s-1', conversion=US%RZ_T_to_kg_m2s, &
+               cmor_standard_name='tendency_of_sea_ice_amount_due_to_surface_melting')
+  CS%id_bsrc_i = register_diag_field('ice_model','sidmassgrowthbot',diag%axesT1, Time, &
+               'Sea-Ice Mass Change Through Basal Growth', &
+               units='kg m-2 s-1', conversion=US%RZ_T_to_kg_m2s, &
+               cmor_standard_name='tendency_of_sea_ice_amount_due_to_congelation_ice_accumulation')
+  CS%id_net_i = register_diag_field('ice_model','sidmassth',diag%axesT1, Time, &
+               'Sea-Ice Mass Change from Thermodynamics', &
+               units='kg m-2 s-1', conversion=US%RZ_T_to_kg_m2s, &
+               cmor_standard_name='tendency_of_sea_ice_amount_due_to_sea_ice_thermodynamics')
+  CS%id_net_s = register_diag_field('ice_model','sisndmassmelt', diag%axesT1, Time, &
+               'Snow Mass Rate of Change Through Melt', &
+               units='kg m-2 s-1', conversion=US%RZ_T_to_kg_m2s, &
+               cmor_standard_name='surface_snow_melt_flux')
+  CS%id_net_c = register_diag_field('ice_model','sidconcth', diag%axesT1, Time, &
+               'Sea-Ice Area Fraction Tendency Due to Thermodynamics', &
+               units='s-1', conversion=US%RZ_T_to_kg_m2s, &
+               cmor_standard_name='tendency_of_sea_ice_area_fraction_due_to_thermodynamics')
+  CS%id_sn2ic_s = register_diag_field('ice_model','sisndmasssi', diag%axesT1,Time, &
+               'Snow Mass Rate of Change Through Snow-to-Ice Conversion', &
+               units='kg m-2 s-1', conversion=US%RZ_T_to_kg_m2s, &
+               cmor_standard_name='tendency_of_surface_snow_amount_due_to_conversion_of_snow_to_sea_ice')
   CS%id_sn2ic = register_diag_field('ice_model','SN2IC'  ,diag%axesT1,Time, &
                'rate of snow to ice conversion', &
-               units='kg m-2 s-1', conversion=US%RZ_T_to_kg_m2s)
+               units='kg m-2 s-1', conversion=US%RZ_T_to_kg_m2s, &
+               cmor_field_name='sidmassgrowthsi', &
+               cmor_standard_name='tendency_of_sea_ice_amount_due_to_conversion_of_snow_to_sea_ice', &
+               cmor_long_name='Sea-Ice Mass Change Through Snow-to-Ice Conversion')
   CS%id_net_melt = register_diag_field('ice_model','net_melt' ,diag%axesT1, Time, &
                'net mass flux from ice & snow to ocean due to melting & freezing', &
                units='kg m-2 s-1', conversion=US%RZ_T_to_kg_m2s)
