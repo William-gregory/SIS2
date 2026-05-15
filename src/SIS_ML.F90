@@ -8,10 +8,8 @@
 !> The implementation of this bias-correction framework was originally shown in https://doi.org/10.1029/2023GL106776.
 !> However this approach was based on updating model restart files offline (high I/O). This present code applies the corrections
 !> at the thermodynamic timestep of SIS2. Due to the relatively simple CNN and ANN architectures, these have been
-!> directly coded into Fortran here (see CNN_forward and ANN_forward subroutines below). More complicated architectures
-!> will be easier to implement through Python wrappers such as Forpy or FTorch. Versions of this code have been developed
-!> for both Forpy and FTorch and can be found at https://github.com/William-gregory/SIS2/tree/forpy_SPEAR and
-!> https://github.com/William-gregory/SIS2/tree/ftorch_SPEAR, respectively.
+!> directly coded into Fortran here (see CNN_forward and ANN_forward subroutines below). This code was used for bias-correcting
+!> coupled SPEAR reforecasts in the paper https://doi.org/10.1126/sciadv.ady8957.
 
 !< Author: Will Gregory (wg4031@princeton.edu / william.gregory@noaa.gov)
 !<
@@ -76,6 +74,7 @@ type, public :: ML_CS
   integer :: jedw !< The upper j-memory limit for the wide halo arrays.
   integer :: CNN_halo_size  !< Halo size at each side of subdomains
   real    :: ML_freq !< frequency of ML corrections
+  logical :: ML_CPL  !< Flag for running in SPEAR vs forced-IceOcean
 
   !< The network weights for both CNN and ANN were raveled into a single vector offline.
   !< See https://github.com/William-gregory/FTorch/tree/SIS2/weights/Torch_to_netcdf.py
@@ -170,6 +169,10 @@ subroutine ML_init(Time, G, param_file, diag, CS)
   call get_param(param_file, mdl, "ANN_WEIGHTS", CS%ANN_weights, &
       "ANN optimized weights", &
       default="/gpfs/f5/scratch/gfdl_o/William.Gregory/FTorch/weights/NetworkB_weights.nc")
+
+  call get_param(param_file, mdl, "ML_CPL", CS%ML_CPL, &
+      "Specify FALSE if running in IceOcean or TRUE if running in SPEAR", &
+      default=.true.)
 
   call MOM_read_data(filename=trim(CS%CNN_weights), fieldname="C1", data=CS%CNN_weight_vec1)
   call MOM_read_data(filename=trim(CS%CNN_weights), fieldname="C2", data=CS%CNN_weight_vec2)
@@ -400,7 +403,7 @@ subroutine postprocess(IST, increments, G, IG)
   real    :: dists, positives
   integer :: i, j, k, m
   integer :: is, ie, js, je, ncat, nlay
-  real    :: cvr, Tf, enth_new
+  real    :: cvr, enth_new
   real    :: irho_ice, rho_ice
   real :: hmid(5) = [0.05,0.2,0.5,0.9,2.0] !ITD thicknesses for new ice
 
@@ -437,9 +440,7 @@ subroutine postprocess(IST, increments, G, IG)
   enddo; enddo
 
   !update sea ice/ocean variables based on corrected sea ice state
-  !see https://github.com/CICE-Consortium/Icepack/blob/main/columnphysics/icepack_therm_itd.F90
-  Tf = min(liquidus_temperature_mush(Si_new/phi_init),-2.0)
-  enth_new = enth_from_TS(Tf, Si_new, IST%ITV)
+  enth_new = enth_from_TS(-2.0, Si_new, IST%ITV)
   do j=js,je ; do i=is,ie
      do k=1,ncat
         !have added ice to grid cell which was previously ice free
@@ -499,42 +500,81 @@ subroutine ML_inference(IST, G, IG, ML, dt_slow)
   integer :: is, ie, js, je, ncat
   integer :: isdw, iedw, jsdw, jedw
   real    :: scale, nsteps
-  
+  real    :: sic_mu, sst_mu, ui_mu, vi_mu, hi_mu, sw_mu, ts_mu, sss_mu
+  real    :: sic_std, sst_std, ui_std, vi_std, hi_std, sw_std, ts_std, sss_std
+  real    :: dsic_mu, cn1_mu, cn2_mu, cn3_mu, cn4_mu, cn5_mu
+  real    :: dsic_std, cn1_std, cn2_std, cn3_std, cn4_std, cn5_std
+
   !normalization statistics for both networks
-  real, parameter :: &
-       !CNN stats
-       sic_mu = 0.29760098549490005, &
-       sst_mu = 2.3628579351247665, &
-       ui_mu = 0.05215740632978765, &
-       vi_mu = 0.015774301594485004, &
-       hi_mu = 0.3428559690813135, &
-       sw_mu = 67.89703631265903, &
-       ts_mu = -4.930865654514209, &
-       sss_mu = 29.812795055984434, &
+  if (ML%ML_CPL == .false.) then
+     !CNN stats
+     sic_mu = 0.351881980286515
+     sst_mu = 2.7164749450877377
+     ui_mu = 0.05207938176727914
+     vi_mu = 0.013623371444231282
+     hi_mu = 0.464892724876259
+     sw_mu = 72.10959544817908
+     ts_mu = -5.965751715716763
+     sss_mu = 33.21439687620783
 
-       sic_std = 2.3988684677904093, &
-       sst_std = 0.19315381038814353, &
-       ui_std = 8.089628019796052, & 
-       vi_std = 11.506500421554342, & 
-       hi_std = 1.68075870925751, &
-       sw_std = 0.013607104867283745, &
-       ts_std = 0.1180058324648759, & 
-       sss_std = 0.09315672798399899, & 
+     sic_std = 2.2776011599449832
+     sst_std = 0.18654039670345826
+     ui_std = 7.548052444202416
+     vi_std = 10.565870985674433
+     hi_std = 1.4135317180558278
+     sw_std = 0.014621315593917536
+     ts_std = 0.10882083297442714
+     sss_std = 0.39935800256758885
 
-       !ANN stats
-       dsic_mu = -0.0011355808093858428, &
-       cn1_mu = 0.013881755289701567, &
-       cn2_mu = 0.04523203783883471, &
-       cn3_mu = 0.09591018269427339, &
-       cn4_mu = 0.05589209926886554, &
-       cn5_mu = 0.12853458139886695, &
+     !ANN stats
+     dsic_mu = -0.0030454079046698256
+     cn1_mu = 0.013804894078500482
+     cn2_mu = 0.04002918473327171
+     cn3_mu = 0.0884308970162244
+     cn4_mu = 0.06447318561424825
+     cn5_mu = 0.14514381883082697
+     
+     dsic_std = 28.891134850797304
+     cn1_std = 18.515013733684597
+     cn2_std = 8.436969737094152
+     cn3_std = 4.871373860744967
+     cn4_std = 5.7322447935064
+     cn5_std = 3.3207886915690743
+  else
+     !CNN stats
+     sic_mu = 0.29760098549490005
+     sst_mu = 2.3628579351247665
+     ui_mu = 0.05215740632978765
+     vi_mu = 0.015774301594485004
+     hi_mu = 0.3428559690813135
+     sw_mu = 67.89703631265903
+     ts_mu = -4.930865654514209
+     sss_mu = 29.812795055984434
+
+     sic_std = 2.3988684677904093
+     sst_std = 0.19315381038814353
+     ui_std = 8.089628019796052
+     vi_std = 11.506500421554342
+     hi_std = 1.68075870925751
+     sw_std = 0.013607104867283745
+     ts_std = 0.1180058324648759
+     sss_std = 0.09315672798399899
+
+     !ANN stats
+     dsic_mu = -0.0011355808093858428
+     cn1_mu = 0.013881755289701567
+     cn2_mu = 0.04523203783883471
+     cn3_mu = 0.09591018269427339
+     cn4_mu = 0.05589209926886554
+     cn5_mu = 0.12853458139886695
        
-       dsic_std = 27.745509886748263, &
-       cn1_std = 18.43686888204614, &
-       cn2_std = 7.828396154351002, &
-       cn3_std = 4.63604339451611, &
-       cn4_std = 6.17786223701505, &
-       cn5_std = 3.3852270028512286
+     dsic_std = 27.745509886748263
+     cn1_std = 18.43686888204614
+     cn2_std = 7.828396154351002
+     cn3_std = 4.63604339451611
+     cn4_std = 6.17786223701505
+     cn5_std = 3.3852270028512286
+  endif
 
   scale = dt_slow/432000.0
   nsteps = ML%ML_freq/dt_slow !number of timesteps in ML%ML_freq
@@ -623,96 +663,6 @@ subroutine ML_inference(IST, G, IG, ML, dt_slow)
   ML%count = ML%count + 1.
 
 end subroutine ML_inference
-
-! the functions below are taken from https://github.com/CICE-Consortium/Icepack/blob/main/columnphysics/icepack_mushy_physics.F90
-! see also pages 57--62 of the CICE manual (https://citeseerx.ist.psu.edu/document?repid=rep1&type=pdf&doi=5eca93a8fbc716474f8fd80c804319b630f90316)
-!=======================================================================
-
-function liquidus_temperature_mush(Sbr) result(zTin)
-
-  ! liquidus relation: equilibrium temperature as function of brine salinity
-  ! based on empirical data from Assur (1958)
-
-  real, intent(in) :: &
-       Sbr    ! ice brine salinity (ppt)
-
-  real :: &
-       zTin   ! ice layer temperature (C)
-
-  real :: &
-       t_high ! mask for high temperature liquidus region
-
-  ! liquidus break
-  real, parameter :: &
-     Sb_liq =  123.66702800276086    ! salinity of liquidus break
-
-  ! constant numbers from ice_constants.F90
-  real, parameter :: &
-       c1      = 1.0 , &
-       c1000   = 1000
-
-  ! liquidus relation - higher temperature region
-  real, parameter :: &
-       az1_liq = -18.48 ,&
-       bz1_liq =   0.0
-  ! liquidus relation - lower temperature region
-  real, parameter :: &
-       az2_liq = -10.3085,  &
-       bz2_liq =  62.4
-
-  ! basic liquidus relation constants
-  real, parameter :: &
-       az1p_liq = az1_liq / c1000, &
-       bz1p_liq = bz1_liq / c1000, &
-       az2p_liq = az2_liq / c1000, &
-       bz2p_liq = bz2_liq / c1000
-
-  ! brine salinity to temperature
-  real, parameter :: &
-     M1_liq = az1_liq            , &
-     N1_liq = -az1p_liq          , &
-     O1_liq = -bz1_liq / az1_liq , &
-     M2_liq = az2_liq            , &
-     N2_liq = -az2p_liq          , &
-     O2_liq = -bz2_liq / az2_liq
-
-  t_high = merge(1.0, 0.0, (Sbr <= Sb_liq))
-
-  zTin = ((Sbr / (M1_liq + N1_liq * Sbr)) + O1_liq) * t_high + &
-        ((Sbr / (M2_liq + N2_liq * Sbr)) + O2_liq) * (1.0 - t_high)
-
-end function liquidus_temperature_mush
-
-!=======================================================================
-
-function enthalpy_ice(zTin, zSin) result(zqin)
-
-
-  real, intent(in) :: &
-       zTin, & ! ice layer temperature (C)
-       zSin    ! ice layer bulk salinity (ppt)
-
-  real :: &
-       zqin    ! ice layer enthalpy (J m-3) 
-
-  real, parameter :: CW  = 3925   ! specific heat of water ~ J/kg/K
-  real, parameter :: CI  = 2100 ! specific heat of fresh ice ~ J/kg/K
-  real, parameter :: LATICE  = 3.34e5   ! latent heat of fusion ~ J/kg
-  real, parameter :: MIU = 0.054
-
-  ! from cice/src/drivers/cesm/ice_constants.F90
-  real :: cp_wtr, cp_ice, Lfresh, Tm
-  cp_ice    = CI  ! specific heat of fresh ice (J/kg/K)
-  cp_wtr    = CW   ! specific heat of ocn    (J/kg/K)
-  Lfresh    = LATICE ! latent heat of melting of fresh ice (J/kg)
-
-  Tm = - MIU*zSin
-
-  zqin = cp_wtr*zTin + cp_ice*(zTin - Tm) + (cp_wtr - cp_ice)*Tm*log(zTin/Tm) + Lfresh*(Tm/zTin-1.0)
-
-end function enthalpy_ice
-
-!=======================================================================
 
 
 end module SIS_ML
