@@ -760,11 +760,20 @@ subroutine do_update_ice_model_fast(Atmos_boundary, IST, sOSS, Rad, FIA, &
       ! surface and bottom melting/freezing energy.  The ice and snow do not
       ! actually lose or gain any mass from freezing or melting.
       ! mw/new - pass melt pond (surface temp fixed at freezing when present)
-      call ice_temp_SIS2(IST%mH_pond(i,j,k), IST%mH_snow(i,j,k), IST%mH_ice(i,j,k), &
-                         enth_col, S_col, hf_0, dhf_dt, SW_abs_col, &
-                         sOSS%T_fr_ocn(i,j), sOSS%bheat(i,j), Tskin, &
-                         dt_fast, NkIce, FIA%tmelt(i,j,k), FIA%bmelt(i,j,k), &
-                         CS%ice_thm_CSp, US, IST%ITV, CS%column_check)
+      if (allocated(IST%Ks_snow)) then  ! Use the 2-d snow properties (SNOW_PROPERTIES_2D).
+        call ice_temp_SIS2(IST%mH_pond(i,j,k), IST%mH_snow(i,j,k), IST%mH_ice(i,j,k), &
+                           enth_col, S_col, hf_0, dhf_dt, SW_abs_col, &
+                           sOSS%T_fr_ocn(i,j), sOSS%bheat(i,j), Tskin, &
+                           dt_fast, NkIce, FIA%tmelt(i,j,k), FIA%bmelt(i,j,k), &
+                           CS%ice_thm_CSp, US, IST%ITV, CS%column_check, &
+                           Ks_snow_in=IST%Ks_snow(i,j), rho_snow_in=IST%rho_snow(i,j))
+      else
+        call ice_temp_SIS2(IST%mH_pond(i,j,k), IST%mH_snow(i,j,k), IST%mH_ice(i,j,k), &
+                           enth_col, S_col, hf_0, dhf_dt, SW_abs_col, &
+                           sOSS%T_fr_ocn(i,j), sOSS%bheat(i,j), Tskin, &
+                           dt_fast, NkIce, FIA%tmelt(i,j,k), FIA%bmelt(i,j,k), &
+                           CS%ice_thm_CSp, US, IST%ITV, CS%column_check)
+      endif
       IST%enth_snow(i,j,k,1) = enth_col(0)
       do m=1,NkIce ; IST%enth_ice(i,j,k,m) = enth_col(m) ; enddo
 
@@ -986,11 +995,20 @@ subroutine redo_update_ice_model_fast(IST, sOSS, Rad, FIA, TSF, optics_CSp, &
     ! can depend on the surface skin temperature, which is not yet well known,
     ! there may be some iteration for self-consistency.
     do k=1,ncat ; do i=isc,iec ; if (do_optics(i,j) .and. IST%part_size(i,j,k) > 0.0) then
-      call ice_optics_SIS2(IST%mH_pond(i,j,k), IST%mH_snow(i,j,k), IST%mH_ice(i,j,k), &
-               Rad%Tskin_Rad(i,j,k), sOSS%T_fr_ocn(i,j), IG%NkIce, &
-               albedos, Rad%sw_abs_sfc(i,j,k), Rad%sw_abs_snow(i,j,k), &
-               sw_abs_lay, Rad%sw_abs_ocn(i,j,k), Rad%sw_abs_int(i,j,k), &
-               US, optics_CSp, IST%ITV, coszen_in=Rad%coszen_lastrad(i,j))
+      if (allocated(IST%rho_snow)) then  ! Use the 2-d snow density (SNOW_PROPERTIES_2D).
+        call ice_optics_SIS2(IST%mH_pond(i,j,k), IST%mH_snow(i,j,k), IST%mH_ice(i,j,k), &
+                 Rad%Tskin_Rad(i,j,k), sOSS%T_fr_ocn(i,j), IG%NkIce, &
+                 albedos, Rad%sw_abs_sfc(i,j,k), Rad%sw_abs_snow(i,j,k), &
+                 sw_abs_lay, Rad%sw_abs_ocn(i,j,k), Rad%sw_abs_int(i,j,k), &
+                 US, optics_CSp, IST%ITV, coszen_in=Rad%coszen_lastrad(i,j), &
+                 rho_snow_in=IST%rho_snow(i,j))
+      else
+        call ice_optics_SIS2(IST%mH_pond(i,j,k), IST%mH_snow(i,j,k), IST%mH_ice(i,j,k), &
+                 Rad%Tskin_Rad(i,j,k), sOSS%T_fr_ocn(i,j), IG%NkIce, &
+                 albedos, Rad%sw_abs_sfc(i,j,k), Rad%sw_abs_snow(i,j,k), &
+                 sw_abs_lay, Rad%sw_abs_ocn(i,j,k), Rad%sw_abs_int(i,j,k), &
+                 US, optics_CSp, IST%ITV, coszen_in=Rad%coszen_lastrad(i,j))
+      endif
 
       if (CS%max_Tskin_itt > 0) then
         ! Determine a new skin temperature that is consistent with the updated
@@ -1028,20 +1046,37 @@ subroutine redo_update_ice_model_fast(IST, sOSS, Rad, FIA, TSF, optics_CSp, &
           tmelt_tmp = 0.0 ; bmelt_tmp = 0.0 ; Tskin_prev = Tskin
           !   This call only estimates an updated skin temperature for
           ! calculating the ice optical properties.
-          call ice_temp_SIS2(IST%mH_pond(i,j,k), IST%mH_snow(i,j,k), IST%mH_ice(i,j,k), &
-                   enth_col, S_col, hf_0, dhf_dt, SW_abs_col, &
-                   sOSS%T_fr_ocn(i,j), sOSS%bheat(i,j), Tskin, &
-                   0.5*dt_here, NkIce, tmelt_tmp, bmelt_tmp, CS%ice_thm_CSp, US, IST%ITV)
+          if (allocated(IST%Ks_snow)) then  ! Use the 2-d snow properties (SNOW_PROPERTIES_2D).
+            call ice_temp_SIS2(IST%mH_pond(i,j,k), IST%mH_snow(i,j,k), IST%mH_ice(i,j,k), &
+                     enth_col, S_col, hf_0, dhf_dt, SW_abs_col, &
+                     sOSS%T_fr_ocn(i,j), sOSS%bheat(i,j), Tskin, &
+                     0.5*dt_here, NkIce, tmelt_tmp, bmelt_tmp, CS%ice_thm_CSp, US, IST%ITV, &
+                     Ks_snow_in=IST%Ks_snow(i,j), rho_snow_in=IST%rho_snow(i,j))
+          else
+            call ice_temp_SIS2(IST%mH_pond(i,j,k), IST%mH_snow(i,j,k), IST%mH_ice(i,j,k), &
+                     enth_col, S_col, hf_0, dhf_dt, SW_abs_col, &
+                     sOSS%T_fr_ocn(i,j), sOSS%bheat(i,j), Tskin, &
+                     0.5*dt_here, NkIce, tmelt_tmp, bmelt_tmp, CS%ice_thm_CSp, US, IST%ITV)
+          endif
 
 !         ! These are here to debug the iterations.
 !         Tskin_itt(itt) = Tskin
 !         SW_tot_itt(itt) = SW_tot
 
-          call ice_optics_SIS2(IST%mH_pond(i,j,k), IST%mH_snow(i,j,k), &
-                  IST%mH_ice(i,j,k), Tskin, sOSS%T_fr_ocn(i,j), IG%NkIce, &
-                  albedos, Rad%sw_abs_sfc(i,j,k), Rad%sw_abs_snow(i,j,k), &
-                  sw_abs_lay, Rad%sw_abs_ocn(i,j,k), Rad%sw_abs_int(i,j,k), &
-                  US, optics_CSp, IST%ITV, coszen_in=Rad%coszen_lastrad(i,j))
+          if (allocated(IST%rho_snow)) then  ! Use the 2-d snow density (SNOW_PROPERTIES_2D).
+            call ice_optics_SIS2(IST%mH_pond(i,j,k), IST%mH_snow(i,j,k), &
+                    IST%mH_ice(i,j,k), Tskin, sOSS%T_fr_ocn(i,j), IG%NkIce, &
+                    albedos, Rad%sw_abs_sfc(i,j,k), Rad%sw_abs_snow(i,j,k), &
+                    sw_abs_lay, Rad%sw_abs_ocn(i,j,k), Rad%sw_abs_int(i,j,k), &
+                    US, optics_CSp, IST%ITV, coszen_in=Rad%coszen_lastrad(i,j), &
+                    rho_snow_in=IST%rho_snow(i,j))
+          else
+            call ice_optics_SIS2(IST%mH_pond(i,j,k), IST%mH_snow(i,j,k), &
+                    IST%mH_ice(i,j,k), Tskin, sOSS%T_fr_ocn(i,j), IG%NkIce, &
+                    albedos, Rad%sw_abs_sfc(i,j,k), Rad%sw_abs_snow(i,j,k), &
+                    sw_abs_lay, Rad%sw_abs_ocn(i,j,k), Rad%sw_abs_int(i,j,k), &
+                    US, optics_CSp, IST%ITV, coszen_in=Rad%coszen_lastrad(i,j))
+          endif
           ! The feedbacks on the shortwave radiation are destabilizing, but only
           ! over a limited temperature range, so stop iterating (1) if the skin
           ! temperature is changing by a small enough amount, (2) there is
@@ -1141,11 +1176,20 @@ subroutine redo_update_ice_model_fast(IST, sOSS, Rad, FIA, TSF, optics_CSp, &
       ! surface and bottom melting/freezing energy.  The ice and snow do not
       ! actually lose or gain any mass from freezing or melting.
       ! mw/new - pass melt pond (surface temp fixed at freezing when present)
-      call ice_temp_SIS2(IST%mH_pond(i,j,k), IST%mH_snow(i,j,k), IST%mH_ice(i,j,k), &
-                         enth_col, S_col, hf_0, dhf_dt, SW_abs_col, &
-                         sOSS%T_fr_ocn(i,j), sOSS%bheat(i,j), Tskin, &
-                         dt_here, NkIce, FIA%tmelt(i,j,k), FIA%bmelt(i,j,k), &
-                         CS%ice_thm_CSp, US, IST%ITV, CS%column_check)
+      if (allocated(IST%Ks_snow)) then  ! Use the 2-d snow properties (SNOW_PROPERTIES_2D).
+        call ice_temp_SIS2(IST%mH_pond(i,j,k), IST%mH_snow(i,j,k), IST%mH_ice(i,j,k), &
+                           enth_col, S_col, hf_0, dhf_dt, SW_abs_col, &
+                           sOSS%T_fr_ocn(i,j), sOSS%bheat(i,j), Tskin, &
+                           dt_here, NkIce, FIA%tmelt(i,j,k), FIA%bmelt(i,j,k), &
+                           CS%ice_thm_CSp, US, IST%ITV, CS%column_check, &
+                           Ks_snow_in=IST%Ks_snow(i,j), rho_snow_in=IST%rho_snow(i,j))
+      else
+        call ice_temp_SIS2(IST%mH_pond(i,j,k), IST%mH_snow(i,j,k), IST%mH_ice(i,j,k), &
+                           enth_col, S_col, hf_0, dhf_dt, SW_abs_col, &
+                           sOSS%T_fr_ocn(i,j), sOSS%bheat(i,j), Tskin, &
+                           dt_here, NkIce, FIA%tmelt(i,j,k), FIA%bmelt(i,j,k), &
+                           CS%ice_thm_CSp, US, IST%ITV, CS%column_check)
+      endif
       IST%enth_snow(i,j,k,1) = enth_col(0)
       do m=1,NkIce ; IST%enth_ice(i,j,k,m) = enth_col(m) ; enddo
 

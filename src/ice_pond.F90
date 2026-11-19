@@ -170,6 +170,7 @@ subroutine ice_ponds(IST, G, IG, mca_ice, mca_snow, mca_pond, TrReg, CS, US, dt,
           sicen         ! salinity (ppt)
 
   real :: rho_ice, rho_snow ! Density of ice and snow [R ~> kg m-3]
+  real :: rho_snow_dflt ! The nominal density of snow, RHO_SNOW [R ~> kg m-3]
   real :: divu_adv
   integer :: m, ntrcr ! loop vars for tracer; n is tracer #; m is tracer layer
   integer :: nt_tsfc_in, nt_qice_in, nt_qsno_in, nt_sice_in
@@ -183,7 +184,8 @@ subroutine ice_ponds(IST, G, IG, mca_ice, mca_snow, mca_pond, TrReg, CS, US, dt,
   isc = G%isc ; iec = G%iec ; jsc = G%jsc ; jec = G%jec
 
   call get_SIS2_thermo_coefs(IST%ITV, rho_ice=rho_ice)
-  call get_SIS2_thermo_coefs(IST%ITV, rho_snow=rho_snow)
+  call get_SIS2_thermo_coefs(IST%ITV, rho_snow=rho_snow_dflt)
+  rho_snow = rho_snow_dflt
   dt_sec = dt*US%T_to_s
 
   call icepack_query_tracer_sizes(ncat_out=ncat_out, ntrcr_out=ntrcr_out, nilyr_out=nilyr_out, nslyr_out=nslyr_out)
@@ -207,6 +209,7 @@ subroutine ice_ponds(IST, G, IG, mca_ice, mca_snow, mca_pond, TrReg, CS, US, dt,
 !  call IST_chksum('before ice ponds ', IST, G, US, IG)
 
   do j=jsc,jec ; do i=isc,iec
+  if (allocated(IST%rho_snow)) rho_snow = IST%rho_snow(i,j)  ! 2-d snow density (SNOW_PROPERTIES_2D)
   if ((G%mask2dT(i,j) .gt. 0.0) .and. (sum(IST%part_size(i,j,1:nCat)) .gt. 0.0)) then
   ! feed locations to Icepack's ridge_ice
 

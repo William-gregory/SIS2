@@ -1122,11 +1122,20 @@ subroutine set_ice_surface_state(Ice, IST, OSS, Rad, FIA, G, US, IG, fCS)
   do j=jsc,jec ; do k=1,ncat ; do i=isc,iec
     i2 = i+i_off ; j2 = j+j_off ; k2 = k+1
     if (IST%part_size(i,j,k)*IST%MH_ice(i,j,k) > 0.0) then
-      call ice_optics_SIS2(IST%mH_pond(i,j,k), IST%mH_snow(i,j,k), IST%mH_ice(i,j,k), &
-               Rad%t_skin(i,j,k), OSS%T_fr_ocn(i,j), IG%NkIce, albedos, &
-               Rad%sw_abs_sfc(i,j,k), Rad%sw_abs_snow(i,j,k), &
-               sw_abs_lay, Rad%sw_abs_ocn(i,j,k), Rad%sw_abs_int(i,j,k), &
-               US, fCS%optics_CSp, IST%ITV, coszen_in=Rad%coszen_nextrad(i,j))
+      if (allocated(IST%rho_snow)) then  ! Use the 2-d snow density (SNOW_PROPERTIES_2D).
+        call ice_optics_SIS2(IST%mH_pond(i,j,k), IST%mH_snow(i,j,k), IST%mH_ice(i,j,k), &
+                 Rad%t_skin(i,j,k), OSS%T_fr_ocn(i,j), IG%NkIce, albedos, &
+                 Rad%sw_abs_sfc(i,j,k), Rad%sw_abs_snow(i,j,k), &
+                 sw_abs_lay, Rad%sw_abs_ocn(i,j,k), Rad%sw_abs_int(i,j,k), &
+                 US, fCS%optics_CSp, IST%ITV, coszen_in=Rad%coszen_nextrad(i,j), &
+                 rho_snow_in=IST%rho_snow(i,j))
+      else
+        call ice_optics_SIS2(IST%mH_pond(i,j,k), IST%mH_snow(i,j,k), IST%mH_ice(i,j,k), &
+                 Rad%t_skin(i,j,k), OSS%T_fr_ocn(i,j), IG%NkIce, albedos, &
+                 Rad%sw_abs_sfc(i,j,k), Rad%sw_abs_snow(i,j,k), &
+                 sw_abs_lay, Rad%sw_abs_ocn(i,j,k), Rad%sw_abs_int(i,j,k), &
+                 US, fCS%optics_CSp, IST%ITV, coszen_in=Rad%coszen_nextrad(i,j))
+      endif
       Ice%albedo_vis_dir(i2,j2,k2) = albedos(VIS_DIR)
       Ice%albedo_vis_dif(i2,j2,k2) = albedos(VIS_DIF)
       Ice%albedo_nir_dir(i2,j2,k2) = albedos(NIR_DIR)
@@ -1733,6 +1742,7 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
                          ! negative number to use the time and geometry.
   real :: rho_ice        ! The nominal density of sea ice [R ~> kg m-3].
   real :: rho_snow       ! The nominal density of snow [R ~> kg m-3].
+  real :: Ks_snow        ! The nominal thermal conductivity of snow [Q R Z2 T-1 C-1 ~> W m-1 degC-1].
   real :: rho_Ocean      ! The nominal density of seawater [R ~> kg m-3].
   real :: kmelt          ! A constant that is used in the calculation of the ocean/ice basal heat
                          ! flux [Q R Z T-1 C-1 ~> W m-2 degC-1]. This could be changed to reflect
@@ -1760,6 +1770,7 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
   logical :: do_icebergs, pass_iceberg_area_to_ocean
   logical :: pass_stress_mag
   logical :: do_ridging
+  logical :: snow_props_2D ! If true, use 2-d snow thermal conductivity and density fields.
   logical :: specified_ice    ! If true, the ice is specified and there is no dynamics.
   logical :: Cgrid_dyn
   logical :: new_sim     ! If true, this is a new simulation, based on the contents of dirs and
@@ -1901,6 +1912,14 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
   call get_param(param_file, mdl, "RHO_SNOW", Rho_snow, &
                  "The nominal density of snow as used by SIS.", &
                  units="kg m-3", default=330.0, scale=US%kg_m3_to_R)
+  call get_param(param_file, mdl, "SNOW_PROPERTIES_2D", snow_props_2D, &
+                 "If true, the snow thermal conductivity and density are 2-d fields that are "//&
+                 "read from and saved to the restart files (Ks_snow and rho_snow), and are "//&
+                 "not otherwise changed by the model.  Where they are absent from the restart "//&
+                 "files they are set to SNOW_CONDUCTIVITY and RHO_SNOW.", default=.false.)
+  call get_param(param_file, mdl, "SNOW_CONDUCTIVITY", Ks_snow, &
+                 "The conductivity of heat in snow.", units="W m-1 K-1", default=0.31, &
+                 scale=US%W_m2_to_QRZ_T*US%m_to_Z*US%C_to_degC, do_not_log=.true.)
 
   call get_param(param_file, mdl, "G_EARTH", g_Earth, &
                  "The gravitational acceleration of the Earth.", &
@@ -2163,7 +2182,13 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
     call ice_type_slow_reg_restarts(sGD%mpp_domain, CatIce, &
                       param_file, Ice, Ice%Ice_restart, carbon_fluxes=allow_carbon_flux_exchange)
 
-    call alloc_IST_arrays(sHI, sIG, US, sIST, omit_tsurf=Eulerian_tsurf, do_ridging=do_ridging)
+    if (snow_props_2D) then
+      call alloc_IST_arrays(sHI, sIG, US, sIST, omit_tsurf=Eulerian_tsurf, do_ridging=do_ridging, &
+                            Ks_snow_dflt=Ks_snow, rho_snow_dflt=Rho_snow)
+    else
+      call alloc_IST_arrays(sHI, sIG, US, sIST, omit_tsurf=Eulerian_tsurf, do_ridging=do_ridging)
+    endif          
+    
     call ice_state_register_restarts(sIST, sG, sIG, US, Ice%Ice_restart)
 
     call alloc_ocean_sfc_state(Ice%sCS%OSS, sHI, sIST%Cgrid_dyn, gas_fields_ocn)
@@ -2327,8 +2352,14 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
                       param_file, Ice, Ice%Ice_fast_restart)
 
     if (redo_fast_update .or. .not.single_IST) then
-      call alloc_IST_arrays(fHI, Ice%fCS%IG, US, Ice%fCS%IST, &
-                            omit_velocities=.true., omit_tsurf=Eulerian_tsurf)
+      if (snow_props_2D) then
+        call alloc_IST_arrays(fHI, Ice%fCS%IG, US, Ice%fCS%IST, &
+                              omit_velocities=.true., omit_tsurf=Eulerian_tsurf, &
+                              Ks_snow_dflt=Ks_snow, rho_snow_dflt=Rho_snow)
+      else
+        call alloc_IST_arrays(fHI, Ice%fCS%IG, US, Ice%fCS%IST, &
+                              omit_velocities=.true., omit_tsurf=Eulerian_tsurf)
+      endif
     endif
     if (.not.single_IST) then
       call alloc_fast_ice_avg(Ice%fCS%FIA, fHI, Ice%fCS%IG, interp_fluxes, gas_fluxes, allow_carbon_flux_exchange)

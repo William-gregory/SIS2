@@ -166,7 +166,7 @@ end subroutine SIS_optics_init
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
 !> ice_optics_SIS2 sets albedo, penetrating solar, and ice/snow transmissivity
 subroutine ice_optics_SIS2(m_pond, m_snow, m_ice, ts, tfw, NkIce, albedos, abs_sfc, &
-                    abs_snow, abs_ice_lay, abs_ocn, abs_int, US, CS, ITV, coszen_in)
+                    abs_snow, abs_ice_lay, abs_ocn, abs_int, US, CS, ITV, coszen_in, rho_snow_in)
   real, intent(in   ) :: m_pond   !< pond mass [R Z ~> kg m-2]
   real, intent(in   ) :: m_snow   !< snow mass per unit area [R Z ~> kg m-2]
   real, intent(in   ) :: m_ice    !< ice thickness [R Z ~> kg m-2]
@@ -183,6 +183,8 @@ subroutine ice_optics_SIS2(m_pond, m_snow, m_ice, ts, tfw, NkIce, albedos, abs_s
   type(SIS_optics_CS),   intent(in) :: CS  !< The ice optics control structure.
   type(ice_thermo_type), intent(in) :: ITV !< The ice thermodynamic parameter structure.
   real, intent(in), optional :: coszen_in !< The cosine of the solar zenith angle [nondim].
+  real, intent(in), optional :: rho_snow_in !< A snow density for this column that overrides
+                                            !! RHO_SNOW [R ~> kg m-3].
 
   ! Local variables
   real :: hs              ! snow thickness [Z ~> m]
@@ -270,6 +272,7 @@ subroutine ice_optics_SIS2(m_pond, m_snow, m_ice, ts, tfw, NkIce, albedos, abs_s
   nb = size(albedos)
 
   call get_SIS2_thermo_coefs(ITV, rho_ice=rho_ice, rho_snow=rho_snow, rho_water=rho_water)
+  if (present(rho_snow_in)) rho_snow = rho_snow_in
   hi = (1.0 / Rho_ice) * m_ice
   hs = (1.0 / Rho_snow) * m_snow
 

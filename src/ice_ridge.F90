@@ -256,6 +256,7 @@ subroutine ice_ridging(IST, G, IG, mca_ice, mca_snow, mca_pond, TrReg, CS, US, d
   real, dimension(:,:,:),   pointer :: Tr_ice_mlvl_ptr => NULL()  !< A pointer to the named tracer
 
   real :: rho_ice, rho_snow, rho_water ! Density of ice, snow and water [R ~> kg m-3]
+  real :: rho_snow_dflt ! The nominal density of snow, RHO_SNOW [R ~> kg m-3]
   real :: Cp_water    ! The heat capacity of sea water [Q C-1 ~> J kg-1 degC-1]
   real :: Tf          ! The freezing temperature of sea water [C ~> degC]
   real :: divu_adv
@@ -273,7 +274,8 @@ subroutine ice_ridging(IST, G, IG, mca_ice, mca_snow, mca_pond, TrReg, CS, US, d
   isc = G%isc ; iec = G%iec ; jsc = G%jsc ; jec = G%jec
 
   call get_SIS2_thermo_coefs(IST%ITV, rho_ice=rho_ice)
-  call get_SIS2_thermo_coefs(IST%ITV, rho_snow=rho_snow)
+  call get_SIS2_thermo_coefs(IST%ITV, rho_snow=rho_snow_dflt)
+  rho_snow = rho_snow_dflt
   call get_SIS2_thermo_coefs(IST%ITV, rho_water=rho_water)
   call get_SIS2_thermo_coefs(IST%ITV, Cp_Water=Cp_water)
   dt_sec = dt*US%T_to_s
@@ -324,6 +326,7 @@ subroutine ice_ridging(IST, G, IG, mca_ice, mca_snow, mca_pond, TrReg, CS, US, d
 
   if (present(rdg_rate)) rdg_rate(:,:) = 0.0
   do j=jsc,jec ; do i=isc,iec
+    if (allocated(IST%rho_snow)) rho_snow = IST%rho_snow(i,j)  ! 2-d snow density (SNOW_PROPERTIES_2D)
     if ((G%mask2dT(i,j) .gt. 0.0) .and. (sum(IST%part_size(i,j,1:nCat)) .gt. 0.0)) then
     ! feed locations to Icepack's ridge_ice
 

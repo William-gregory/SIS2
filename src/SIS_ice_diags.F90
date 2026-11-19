@@ -57,6 +57,7 @@ type, public :: ice_state_diags_type ; private
   integer :: id_siconc = -1, id_sithick = -1, id_sisnconc = -1, id_sisnthick = -1
   integer :: id_siconc_CMOR = -1, id_sisnconc_CMOR = -1
   integer :: id_siu = -1, id_siv = -1, id_sispeed = -1, id_sitimefrac = -1
+  integer :: id_Ks_snow = -1, id_rho_snow = -1
   !!@}
 end type ice_state_diags_type
 
@@ -92,6 +93,8 @@ subroutine post_ice_state_diagnostics(IDs, IST, OSS, IOF, dt_slow, Time, G, US, 
     mass_by_cat ! Sea ice mass per unit ocean area by thickness category [R Z ~> kg m-2]
   real, dimension(SZI_(G),SZJ_(G),IG%CatIce) :: &
     thick_by_cat ! Sea ice thickness by thickness category [Z ~> m]
+  real, dimension(SZI_(G),SZJ_(G),IG%CatIce) :: &
+    snow_thick_cat ! Snow thickness by thickness category with 2-d snow density [Z ~> m]
   real, dimension(SZI_(G),SZJ_(G)) :: diagVar ! A temporary array for diagnostics.
   real, dimension(IG%NkIce) :: S_col ! Specified thermodynamic salinity of each
                                      ! ice layer if spec_thermo_sal is true [S ~> gSalt kg-1]
@@ -199,10 +202,25 @@ subroutine post_ice_state_diagnostics(IDs, IST, OSS, IOF, dt_slow, Time, G, US, 
   endif
   if (IDs%id_hp>0) call post_avg(IDs%id_hp, IST%mH_pond, IST%part_size(:,:,1:), & ! mw/new
                                  diag, G=G, scale=1.0/(1e3*US%kg_m3_to_R), wtd=.true.) ! rho_water=1e3 [kg m-3]
-  if (IDs%id_hs>0) call post_avg(IDs%id_hs, IST%mH_snow, IST%part_size(:,:,1:), &
-                                 diag, G=G, scale=1.0/Rho_snow, wtd=.true.)
-  if (IDs%id_sisnthick>0) call post_avg(IDs%id_sisnthick, IST%mH_snow, IST%part_size(:,:,1:), &
-                                 diag, G=G, scale=1.0/Rho_snow, wtd=.true.)
+  if (allocated(IST%rho_snow)) then  ! Use the 2-d snow density (SNOW_PROPERTIES_2D).
+    if ((IDs%id_hs>0) .or. (IDs%id_sisnthick>0)) then
+      snow_thick_cat(:,:,:) = 0.0
+      do k=1,ncat ; do j=jsc,jec ; do i=isc,iec
+        snow_thick_cat(i,j,k) = IST%mH_snow(i,j,k) / IST%rho_snow(i,j)
+      enddo ; enddo ; enddo
+    endif
+    if (IDs%id_hs>0) call post_avg(IDs%id_hs, snow_thick_cat, IST%part_size(:,:,1:), &
+                                   diag, G=G, wtd=.true.)
+    if (IDs%id_sisnthick>0) call post_avg(IDs%id_sisnthick, snow_thick_cat, IST%part_size(:,:,1:), &
+                                   diag, G=G, wtd=.true.)
+  else
+    if (IDs%id_hs>0) call post_avg(IDs%id_hs, IST%mH_snow, IST%part_size(:,:,1:), &
+                                   diag, G=G, scale=1.0/Rho_snow, wtd=.true.)
+    if (IDs%id_sisnthick>0) call post_avg(IDs%id_sisnthick, IST%mH_snow, IST%part_size(:,:,1:), &
+                                   diag, G=G, scale=1.0/Rho_snow, wtd=.true.)
+  endif
+  if (allocated(IST%Ks_snow) .and. (IDs%id_Ks_snow>0)) call post_data(IDs%id_Ks_snow, IST%Ks_snow, diag)
+  if (allocated(IST%rho_snow) .and. (IDs%id_rho_snow>0)) call post_data(IDs%id_rho_snow, IST%rho_snow, diag)
   if (IDs%id_hi>0) call post_avg(IDs%id_hi, IST%mH_ice, IST%part_size(:,:,1:), &
                                  diag, G=G, scale=1.0/Rho_ice, wtd=.true.)
   if (IDs%id_sithick>0) call post_avg(IDs%id_sithick, IST%mH_ice, IST%part_size(:,:,1:), &
@@ -383,6 +401,11 @@ subroutine register_ice_state_diagnostics(Time, IG, US, param_file, diag, IDs)
                standard_name="SurfaceSnowAreaFraction")
   IDs%id_sisnthick = register_diag_field('ice_model', 'sisnthick', diag%axesT1, Time, &
                'snow thickness', units='m', conversion=US%Z_to_m)
+  IDs%id_Ks_snow  = register_diag_field('ice_model', 'sisncond', diag%axesT1, Time, &
+               'snow thermal conductivity (SNOW_PROPERTIES_2D)', units='W m-1 K-1', &
+               conversion=US%QRZ_T_to_W_m2*US%Z_to_m*US%degC_to_C)
+  IDs%id_rho_snow = register_diag_field('ice_model', 'sisnrho', diag%axesT1, Time, &
+               'snow density (SNOW_PROPERTIES_2D)', units='kg m-3', conversion=US%R_to_kg_m3)
 
   IDs%id_t_iceav = register_diag_field('ice_model', 'T_bulkice', diag%axesT1, Time, &
                'Volume-averaged ice temperature', units='degC', conversion=US%C_to_degC)

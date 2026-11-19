@@ -167,7 +167,8 @@ end subroutine SIS2_ice_thm_init
 !> ice_temp_SIS2 calculates the updated snow and ice enthalpy and new skin
 !!    temperature after due to surface forcing and vertical diffusion of heat.
 subroutine ice_temp_SIS2(m_pond, m_snow, m_ice, enthalpy, sice, SF_0, dSF_dT, sol, tfw, fb, &
-                         tsurf, dtt, NkIce, tmelt, bmelt, CS, US, ITV, check_conserve)
+                         tsurf, dtt, NkIce, tmelt, bmelt, CS, US, ITV, check_conserve, &
+                         Ks_snow_in, rho_snow_in)
 
   real, intent(in   ) :: m_pond  !< pond mass per unit area [R Z ~> kg m-2]
   real, intent(in   ) :: m_snow  !< snow mass per unit area [R Z ~> kg m-2]
@@ -192,6 +193,10 @@ subroutine ice_temp_SIS2(m_pond, m_snow, m_ice, enthalpy, sice, SF_0, dSF_dT, so
   type(unit_scale_type), intent(in) :: US  !< A structure with unit conversion factors
   type(ice_thermo_type), intent(in) :: ITV !< The ice thermodynamic parameter structure.
   logical, optional, intent(in) :: check_conserve !< If true, check for local heat conservation.
+  real,    optional, intent(in) :: Ks_snow_in  !< A snow thermal conductivity for this column that overrides
+                                               !! SNOW_CONDUCTIVITY [Q R Z2 T-1 C-1 ~> W m-1 degC-1].
+  real,    optional, intent(in) :: rho_snow_in !< A snow density for this column that overrides
+                                               !! RHO_SNOW [R ~> kg m-3].
 
   ! Local variables for temperature calculation [see Winton (1999) section II.A.]
   ! note:  here equations are multiplied by hi to improve thin ice accuracy
@@ -246,6 +251,7 @@ subroutine ice_temp_SIS2(m_pond, m_snow, m_ice, enthalpy, sice, SF_0, dSF_dT, so
                        ! melting [Q ~> J kg-1].
   real :: rho_ice  ! The nominal density of sea ice [R ~> kg m-3].
   real :: rho_snow ! The nominal density of snow [R ~> kg m-3].
+  real :: Ks       ! The thermal conductivity of snow in this column [Q R Z2 T-1 C-1 ~> W m-1 degC-1].
   real :: Cp_ice   ! The heat capacity of ice [Q C-1 ~> J kg-1 degC-1].
   real :: Cp_brine ! The heat capacity of liquid water in the brine pockets,
                    ! [Q C-1 ~> J kg-1 degC-1].
@@ -261,6 +267,9 @@ subroutine ice_temp_SIS2(m_pond, m_snow, m_ice, enthalpy, sice, SF_0, dSF_dT, so
   call get_SIS2_thermo_coefs(ITV, rho_ice=rho_ice, rho_snow=rho_snow, &
                              Cp_Ice=Cp_ice, Latent_Fusion=Lat_fus, Cp_Brine=Cp_Brine)
 
+  if (present(rho_snow_in)) rho_snow = rho_snow_in
+  Ks = CS%Ks ; if (present(Ks_snow_in)) Ks = Ks_snow_in
+
   mL_ice = m_ice / NkIce   ! ice mass per unit area of each layer
   mL_snow = m_snow         ! snow mass per unit area [R Z ~> kg m-2].
   call calculate_T_Freeze(sice, tfi, ITV)    ! freezing temperature of ice layers
@@ -275,10 +284,10 @@ subroutine ice_temp_SIS2(m_pond, m_snow, m_ice, enthalpy, sice, SF_0, dSF_dT, so
 
   ! Set some diffusive coupling coefficients between the various layers.
   kk = CS%Ki / hL_ice_eff     ! full ice layer conductivity
-  k10 = 2.0*(CS%Ks*CS%Ki) / (hL_ice_eff*CS%Ks + hsnow_eff*CS%Ki) ! coupling ice layer 1 to snow
-  k0a = (CS%Ks*dSF_dT) / (0.5*dSF_dT*hsnow_eff + CS%Ks)      ! coupling snow to "air"
-  k0skin = 2.0*CS%Ks / hsnow_eff
-  k0a_x_ta = (CS%Ks*SF_0) / (0.5*dSF_dT*hsnow_eff + CS%Ks) ! coupling times "air" temperature
+  k10 = 2.0*(Ks*CS%Ki) / (hL_ice_eff*Ks + hsnow_eff*CS%Ki) ! coupling ice layer 1 to snow
+  k0a = (Ks*dSF_dT) / (0.5*dSF_dT*hsnow_eff + Ks)      ! coupling snow to "air"
+  k0skin = 2.0*Ks / hsnow_eff
+  k0a_x_ta = (Ks*SF_0) / (0.5*dSF_dT*hsnow_eff + Ks) ! coupling times "air" temperature
 
   ! Determine the enthalpy for conservation checks.
   m_lay(0) = mL_snow ; do k=1,NkIce ; m_lay(k) = mL_ice ; enddo

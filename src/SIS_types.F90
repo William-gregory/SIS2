@@ -103,6 +103,12 @@ type ice_state_type
   real, allocatable, dimension(:,:,:) :: &
     rdg_height    ! height of ridged ice per category [Z ~> m]
 
+  ! These are only allocated if SNOW_PROPERTIES_2D is true, in which case they replace
+  ! SNOW_CONDUCTIVITY and RHO_SNOW.
+  real, allocatable, dimension(:,:) :: &
+    Ks_snow, &  !< The thermal conductivity of snow [Q R Z2 T-1 C-1 ~> W m-1 degC-1].
+    rho_snow    !< The density of snow [R ~> kg m-3].
+
   real :: T_0degC      !< 0 degrees C in Kelvin, with rescaling [C ~> Kelvin]
   logical :: Cgrid_dyn !< If true use a C-grid discretization of the sea-ice dynamics.
   logical :: valid_IST !< If true, this is currently the valid state of the ice.  Otherwise the ice
@@ -435,7 +441,8 @@ contains
 
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
 !> alloc_IST_arrays allocates the arrays in an ice_state_type.
-subroutine alloc_IST_arrays(HI, IG, US, IST, omit_velocities, omit_Tsurf, do_ridging)
+subroutine alloc_IST_arrays(HI, IG, US, IST, omit_velocities, omit_Tsurf, do_ridging, &
+                            Ks_snow_dflt, rho_snow_dflt)
   type(hor_index_type), intent(in)    :: HI  !< The horizontal index type describing the domain
   type(ice_grid_type),  intent(in)    :: IG  !< The sea-ice specific grid type
   type(unit_scale_type), intent(in)   :: US  !< A structure with unit conversion factors
@@ -443,6 +450,10 @@ subroutine alloc_IST_arrays(HI, IG, US, IST, omit_velocities, omit_Tsurf, do_rid
   logical,    optional, intent(in)    :: omit_velocities !< If true, do not allocate velocity arrays
   logical,    optional, intent(in)    :: omit_Tsurf !< If true, do not allocate the surface temperature array
   logical,    optional, intent(in)    :: do_ridging !< If true, allocate arrays related to ridging
+  real,       optional, intent(in)    :: Ks_snow_dflt  !< If present, allocate the 2-d snow thermal conductivity
+                                         !! with this initial value [Q R Z2 T-1 C-1 ~> W m-1 degC-1]
+  real,       optional, intent(in)    :: rho_snow_dflt !< If present, allocate the 2-d snow density
+                                         !! with this initial value [R ~> kg m-3]
 
   integer :: isd, ied, jsd, jed, CatIce, NkIce
   logical :: do_vel, do_Tsurf
@@ -471,6 +482,11 @@ subroutine alloc_IST_arrays(HI, IG, US, IST, omit_velocities, omit_Tsurf, do_rid
     allocate(IST%rdg_mice(isd:ied, jsd:jed, CatIce), source=0.0)
     allocate(IST%rdg_height(isd:ied, jsd:jed, CatIce), source=0.0)
   endif ; endif
+
+  ! The 2-d snow properties are set everywhere (including where there is no snow) so that
+  ! newly formed snow uses the local value; restart values overwrite these defaults.
+  if (present(Ks_snow_dflt)) allocate(IST%Ks_snow(isd:ied, jsd:jed), source=Ks_snow_dflt)
+  if (present(rho_snow_dflt)) allocate(IST%rho_snow(isd:ied, jsd:jed), source=rho_snow_dflt)
 
   if (do_vel) then
     ! These velocities are only required for the slow ice processes, and hence
@@ -526,6 +542,16 @@ subroutine ice_state_register_restarts(IST, G, IG, US, Ice_restart)
                                 mandatory=.false., units="J kg-1", conversion=US%Q_to_J_kg)
     call register_restart_field(Ice_restart, 'sal_ice', IST%sal_ice, &
                                 mandatory=.false., units="g kg-1", conversion=US%S_to_ppt)
+
+    ! If absent from the restart file, these keep the uniform default values they were allocated with.
+    if (allocated(IST%Ks_snow)) &
+      call register_restart_field(Ice_restart, 'Ks_snow', IST%Ks_snow, &
+                                  longname="The thermal conductivity of snow", mandatory=.false., &
+                                  units="W m-1 K-1", conversion=US%QRZ_T_to_W_m2*US%Z_to_m*US%degC_to_C)
+    if (allocated(IST%rho_snow)) &
+      call register_restart_field(Ice_restart, 'rho_snow', IST%rho_snow, &
+                                  longname="The density of snow", mandatory=.false., &
+                                  units="kg m-3", conversion=US%R_to_kg_m3)
 
     if (allocated(IST%snow_to_ocn)) then
       call register_restart_field(Ice_restart, 'snow_to_ocn', IST%snow_to_ocn, &
@@ -1100,6 +1126,17 @@ subroutine copy_IST_to_IST(IST_in, IST_out, HI_in, HI_out, IG)
     IST_out%sal_ice(i2,j2,k,m) = IST_in%sal_ice(i,j,k,m)
   enddo ; enddo ; enddo ; enddo
 
+  if (allocated(IST_out%Ks_snow) .and. allocated(IST_in%Ks_snow)) then
+    do j=jsc,jec ; do i=isc,iec ; i2 = i+i_off ; j2 = j+j_off
+      IST_out%Ks_snow(i2,j2) = IST_in%Ks_snow(i,j)
+    enddo ; enddo
+  endif
+  if (allocated(IST_out%rho_snow) .and. allocated(IST_in%rho_snow)) then
+    do j=jsc,jec ; do i=isc,iec ; i2 = i+i_off ; j2 = j+j_off
+      IST_out%rho_snow(i2,j2) = IST_in%rho_snow(i,j)
+    enddo ; enddo
+  endif
+
   ! The velocity components, rdg_mice, rdg_height, TrReg, and ITV are deliberately not being copied.
 
 end subroutine copy_IST_to_IST
@@ -1194,7 +1231,38 @@ subroutine redistribute_IST_to_IST(IST_in, IST_out, domain_in, domain_out)
                           "neither IST_in nor IST_out associated.")
   endif
 
+  call redistribute_snow_props(IST_in, IST_out, domain_in, domain_out)
+
 end subroutine redistribute_IST_to_IST
+
+
+!> redistribute_snow_props redistributes the optional 2-d snow properties (SNOW_PROPERTIES_2D)
+!! between ice state types on different domains.
+subroutine redistribute_snow_props(IST_in, IST_out, domain_in, domain_out)
+  type(ice_state_type), pointer    :: IST_in     !< The ice_state_type that is being copied from (intent in).
+  type(ice_state_type), pointer    :: IST_out    !< The ice_state_type that is being copied into (intent inout).
+  type(domain2d),       intent(in) :: domain_in  !< The source data domain.
+  type(domain2d),       intent(in) :: domain_out !< The target data domain.
+
+  real, pointer, dimension(:,:) :: null_ptr2D => NULL()
+  logical :: snow_in, snow_out
+
+  snow_in = .false. ; if (associated(IST_in)) snow_in = allocated(IST_in%Ks_snow)
+  snow_out = .false. ; if (associated(IST_out)) snow_out = allocated(IST_out%Ks_snow)
+
+  if (snow_in .and. snow_out) then
+    call redistribute_data(domain_in, IST_in%Ks_snow, domain_out, IST_out%Ks_snow, complete=.false.)
+    call redistribute_data(domain_in, IST_in%rho_snow, domain_out, IST_out%rho_snow, complete=.true.)
+  elseif (snow_out) then
+    call redistribute_data(domain_in, null_ptr2D, domain_out, IST_out%Ks_snow, complete=.false.)
+    call redistribute_data(domain_in, null_ptr2D, domain_out, IST_out%rho_snow, complete=.true.)
+  elseif (snow_in) then
+    call redistribute_data(domain_in, IST_in%Ks_snow, domain_out, null_ptr2D, complete=.false.)
+    call redistribute_data(domain_in, IST_in%rho_snow, domain_out, null_ptr2D, complete=.true.)
+  endif
+
+end subroutine redistribute_snow_props
+
 
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
 !> translate_OSS_to_sOSS translates the full ocean surface state, as seen by the slow
@@ -2094,6 +2162,9 @@ subroutine dealloc_IST_arrays(IST)
   if (allocated(IST%snow_to_ocn)) deallocate(IST%snow_to_ocn)
   if (allocated(IST%enth_snow_to_ocn)) deallocate(IST%enth_snow_to_ocn)
   if (allocated(IST%t_surf)) deallocate(IST%t_surf)
+
+  if (allocated(IST%Ks_snow)) deallocate(IST%Ks_snow)
+  if (allocated(IST%rho_snow)) deallocate(IST%rho_snow)
 
   if (allocated(IST%u_ice_C)) deallocate(IST%u_ice_C)
   if (allocated(IST%v_ice_C)) deallocate(IST%v_ice_C)
