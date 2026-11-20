@@ -63,16 +63,24 @@ use ice_age_tracer, only : register_ice_age_tracer, initialize_ice_age_tracer
 use ice_age_tracer, only : ice_age_tracer_column_physics
 use ice_age_tracer, only : ice_age_stock, ice_age_end
 use ice_age_tracer, only : ice_age_tracer_CS
+use snow_pack_tracers, only : register_snow_pack_tracers, initialize_snow_pack_tracers
+use snow_pack_tracers, only : snow_pack_step, snow_pack_post_diags, snow_pack_tracers_end
+use snow_pack_tracers, only : snow_pack_CS
+use SIS_types,         only : ice_state_type, fast_ice_avg_type
+use MOM_unit_scaling,  only : unit_scale_type
 
 implicit none ; private
 
 public SIS_call_tracer_register, SIS_tracer_flow_control_init
 public SIS_call_tracer_column_fns, SIS_call_tracer_stocks, SIS_tracer_flow_control_end
+public SIS_call_snow_pack_step, SIS_call_snow_pack_diags
 
 !> The control structure for orchestrating calls to the tracer packages
 type, public :: SIS_tracer_flow_control_CS ; private
     logical :: use_ice_age = .false.  !< If true, use the ice age tracer packages.
     type(ice_age_tracer_CS), pointer :: ice_age_tracer_CSp => NULL()
+    logical :: use_snow_pack = .false. !< If true, use the snow-pack tracers for snow density and conductivity.
+    type(snow_pack_CS), pointer :: snow_pack_CSp => NULL() !< The snow-pack tracer control structure
                                       !< The control structure for the ice age tracer packages.
 end type SIS_tracer_flow_control_CS
 
@@ -117,6 +125,15 @@ subroutine SIS_call_tracer_register(G, IG, param_file, CS, diag, TrReg, Ice_rest
                          diag, TrReg, Ice_restart)
   endif
 
+  call get_param(param_file, mdl, "USE_SNOW_PACK_TRACERS", CS%use_snow_pack, &
+      "If true, track snow-pack properties as snow tracers and use them to set a state-dependent "//&
+      "snow density and conductivity once a day. These only affect the physics if "//&
+      "SNOW_PROPERTIES_2D is true; otherwise they are diagnostic.", default=.false.)
+  if (CS%use_snow_pack) then
+    CS%use_snow_pack = register_snow_pack_tracers(G, IG, param_file, CS%snow_pack_CSp, &
+                         diag, TrReg, Ice_restart)
+  endif
+
 
 end subroutine SIS_call_tracer_register
 
@@ -138,6 +155,8 @@ subroutine SIS_tracer_flow_control_init(day, G, IG, param_file, CS, is_restart)
   !  Add other user-provided calls here.
   if (CS%use_ice_age) &
       call initialize_ice_age_tracer(day, G, IG, CS%ice_age_tracer_CSp, is_restart)
+  if (CS%use_snow_pack) &
+      call initialize_snow_pack_tracers(day, G, IG, CS%snow_pack_CSp, is_restart)
 
 end subroutine SIS_tracer_flow_control_init
 
@@ -243,8 +262,32 @@ subroutine SIS_tracer_flow_control_end(CS)
                                                    !! deallocated here
 
   if (CS%use_ice_age) call ice_age_end(CS%ice_age_tracer_CSp)
+  if (CS%use_snow_pack) call snow_pack_tracers_end(CS%snow_pack_CSp)
 
   if (associated(CS)) deallocate(CS)
 end subroutine SIS_tracer_flow_control_end
+
+!> Accumulate the forcing for the snow-pack tracers over one slow step, and do their daily update
+!! (snow-pack properties, density and conductivity) once a full day has accumulated.
+subroutine SIS_call_snow_pack_step(dt, G, IG, US, IST, FIA, CS)
+  real,                    intent(in)    :: dt  !< The slow thermodynamic step [T ~> s]
+  type(SIS_hor_grid_type), intent(in)    :: G   !< The horizontal grid type
+  type(ice_grid_type),     intent(in)    :: IG  !< The sea-ice specific grid type
+  type(unit_scale_type),   intent(in)    :: US  !< Unit conversion factors
+  type(ice_state_type),    intent(inout) :: IST !< The ice state
+  type(fast_ice_avg_type), intent(in)    :: FIA !< Averages of the fast fluxes
+  type(SIS_tracer_flow_control_CS), pointer :: CS !< The tracer flow control structure
+
+  if (.not.associated(CS)) return
+  if (CS%use_snow_pack) call snow_pack_step(CS%snow_pack_CSp, G, IG, US, IST, FIA, dt)
+end subroutine SIS_call_snow_pack_step
+
+!> Post the snow-pack tracer diagnostics; call with diagnostic averaging enabled.
+subroutine SIS_call_snow_pack_diags(CS)
+  type(SIS_tracer_flow_control_CS), pointer :: CS !< The tracer flow control structure
+
+  if (.not.associated(CS)) return
+  if (CS%use_snow_pack) call snow_pack_post_diags(CS%snow_pack_CSp)
+end subroutine SIS_call_snow_pack_diags
 
 end module SIS_tracer_flow_control

@@ -52,6 +52,7 @@ use SIS_optics,        only : VIS_DIR, VIS_DIF, NIR_DIR, NIR_DIF
 use SIS_sum_output,    only : SIS_sum_out_CS, write_ice_statistics! , SIS_sum_output_init
 use SIS_sum_output,    only : accumulate_bottom_input, accumulate_input_1, accumulate_input_2
 use SIS_tracer_flow_control, only : SIS_tracer_flow_control_CS, SIS_call_tracer_column_fns
+use SIS_tracer_flow_control, only : SIS_call_snow_pack_step, SIS_call_snow_pack_diags
 use SIS_tracer_registry, only : SIS_unpack_passive_ice_tr, SIS_repack_passive_ice_tr
 use SIS_tracer_registry, only : SIS_count_passive_tracers
 use SIS_transport,     only : adjust_ice_categories, SIS_transport_CS
@@ -1426,9 +1427,14 @@ subroutine SIS2_thermodynamics(IST, dt_slow, CS, OSS, FIA, IOF, G, US, IG)
     endif ; enddo ; enddo
   endif
 
+  ! Accumulate the daily forcing for the snow-pack tracers, and once a day update the snow-pack
+  ! properties and the snow density and conductivity (USE_SNOW_PACK_TRACERS).
+  call SIS_call_snow_pack_step(dt_slow, G, IG, US, IST, FIA, CS%tracer_flow_CSp)
+
   !   The remainder of this routine deals with any thermodynamics diagnostic
   ! output that has been requested.
   call enable_SIS_averaging(US%T_to_s*dt_slow, CS%Time, CS%diag)
+  call SIS_call_snow_pack_diags(CS%tracer_flow_CSp)
 
   yr_dtslow = (864e2*365*Idt_slow)
   if (CS%id_lsnk>0) then
