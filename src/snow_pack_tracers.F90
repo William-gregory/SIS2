@@ -306,18 +306,26 @@ subroutine snow_pack_step(CS, G, IG, US, IST, FIA, dt)
   type(ice_state_type),    intent(inout) :: IST !< The ice state; rho_snow and Ks_snow are set here
   type(fast_ice_avg_type), intent(in)    :: FIA !< Averages of the fast fluxes, including wind stress
   real,                    intent(in)    :: dt  !< The step length [T ~> s]
-  real :: dt_s, tau
+  real :: dt_s, tau, Tsk
   integer :: i, j, k
 
   if (.not.associated(CS)) return
   dt_s = US%T_to_s * dt
 
-  !$OMP parallel do default(shared) private(tau)
+  !$OMP parallel do default(shared) private(tau, Tsk)
   do j=G%jsc,G%jec ; do i=G%isc,G%iec
     tau = US%RLZ_T2_to_Pa * sqrt(FIA%WindStr_x(i,j)**2 + FIA%WindStr_y(i,j)**2)
     CS%U_sum(i,j) = CS%U_sum(i,j) + sqrt(tau / (CS%rho_air * CS%Cd_10m)) * dt_s
     do k=1,IG%CatIce
-      CS%Ts_sum(i,j,k) = CS%Ts_sum(i,j,k) + US%C_to_degC*IST%t_surf(i,j,k) * dt_s
+      ! Skin temperature averaged over the fast steps [C ~> degC]: by category if available
+      ! (interpolated fluxes), otherwise the mean over the ice categories.  IST%t_surf is not used
+      ! because it is only allocated on the slow side for EULERIAN_TSURF = False.
+      if (allocated(FIA%Tskin_cat)) then
+        Tsk = FIA%Tskin_cat(i,j,k)
+      else
+        Tsk = FIA%Tskin_avg(i,j)
+      endif
+      CS%Ts_sum(i,j,k) = CS%Ts_sum(i,j,k) + (US%C_to_degC*Tsk + 273.15) * dt_s
       CS%snow_sum(i,j,k) = CS%snow_sum(i,j,k) + US%RZ_to_kg_m2*max(FIA%fprec_top(i,j,k), 0.0) * dt
       if (IST%mH_snow(i,j,k) > 0.0) then
         CS%Tsn_sum(i,j,k) = CS%Tsn_sum(i,j,k) + &
