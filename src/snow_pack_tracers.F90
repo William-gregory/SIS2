@@ -211,8 +211,11 @@ logical function register_snow_pack_tracers(G, IG, param_file, CS, diag, TrReg, 
       "Clamp on the standardised error before the quantile lookup.", units="nondim", default=2.5, &
       do_not_log=.not.CS%stochastic)
   call get_param(param_file, mdl, "SNOW_PACK_STOCH_SEED", CS%st_seed, &
-      "Seed for the stochastic snow-density error; change it for a different ensemble member.", &
+      "Seed for the stochastic snow-density error, 0 to 999; change it for a different, "//&
+      "independent ensemble member. The same seed reproduces a run exactly.", &
       default=0, do_not_log=.not.CS%stochastic)
+  if (CS%stochastic .and. ((CS%st_seed < 0) .or. (CS%st_seed > 999))) &
+    call SIS_error(FATAL, "snow_pack_tracers: SNOW_PACK_STOCH_SEED must be between 0 and 999.")
 
   if ((trim(CS%Ks_scheme) /= "SNOWPACK") .and. (trim(CS%Ks_scheme) /= "STURM97") .and. &
       (trim(CS%Ks_scheme) /= "CONSTANT")) &
@@ -514,9 +517,16 @@ real function gauss(CS, ctr, ig, jg, nig, k, stream)
   real :: u1, u2
   integer :: key
 
-  key = ieor((((jg - 1)*nig + (ig - 1))*16 + (k - 1))*2 + (stream - 1), CS%st_seed)
-  u1 = max(random_01_CB(2*ctr, key), 1.0e-12)
-  u2 = random_01_CB(2*ctr + 1, key)
+  ! The key identifies the stream (cell, category, eta_p or eta_f).  The seed shifts the counter by
+  ! SEED_STRIDE days, so each seed uses its own block of counter values and ensemble members are
+  ! independent; combining the seed with the key instead would only relabel the streams.
+  integer, parameter :: SEED_STRIDE = 1000000
+  integer :: c
+
+  key = (((jg - 1)*nig + (ig - 1))*16 + (k - 1))*2 + (stream - 1)
+  c = 2*(ctr + CS%st_seed*SEED_STRIDE)
+  u1 = max(random_01_CB(c, key), 1.0e-12)
+  u2 = random_01_CB(c + 1, key)
   gauss = sqrt(-2.0*log(u1)) * cos(TWO_PI*u2)
 end function gauss
 
